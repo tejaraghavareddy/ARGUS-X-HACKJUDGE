@@ -23,6 +23,7 @@ import {
   StatusBadge,
 } from "@/components/app/Primitives";
 import { CopilotPanel } from "@/components/app/CopilotPanel";
+import { RepoAnalysisPanel } from "@/components/app/RepoAnalysisPanel";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -477,6 +478,8 @@ export default function JudgeReview() {
               <Empty>No external links provided.</Empty>
             )}
           </SectionCard>
+
+          {team && <RepoAnalysisPanel teamId={team} />}
 
           {team && <CopilotPanel teamId={team} />}
 

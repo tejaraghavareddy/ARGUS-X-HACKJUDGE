@@ -14,6 +14,7 @@ import {
   StatusBadge,
 } from "@/components/app/Primitives";
 import { AdvisoryPanel } from "@/components/app/AdvisoryPanel";
+import { RepoAnalysisPanel } from "@/components/app/RepoAnalysisPanel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -221,6 +222,8 @@ export default function AdminTeamDetail() {
           </SectionCard>
 
           <AdvisoryPanel review={data.submission?.aiReview} audience="judge" />
+
+          {team && <RepoAnalysisPanel teamId={team} />}
         </div>
 
         <SectionCard

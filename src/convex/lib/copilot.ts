@@ -515,6 +515,36 @@ export function buildBriefSchema(
   };
 }
 
+// ---------------------------------------------------------------------------
+// GitHub repository analysis — optional LLM narrative layer
+// ---------------------------------------------------------------------------
+
+/** The JSON shape the repo-analysis narrative is constrained to. */
+export const REPO_NARRATIVE_SCHEMA = {
+  type: "object",
+  properties: {
+    narrative: {
+      type: "string",
+      description:
+        "Concise neutral technical reading of the detected evidence (2-4 sentences). Describe only what the evidence shows. Never evaluate quality or compare to other projects.",
+    },
+  },
+  required: ["narrative"],
+} as const;
+
+export const REPO_NARRATIVE_PROMPT = `You support hackathon judges by reading a deterministic repository scan.
+
+You are given detected evidence items, each with the file it came from. Write a SHORT neutral technical reading of what the repository contains.
+
+ABSOLUTE RULES
+1. Use ONLY the evidence provided. Do not add capabilities, tools, or practices that are not in the evidence.
+2. Never evaluate quality, never rank, never score, never compare against other projects or "typical" repos.
+3. NEVER claim a feature does not exist. Where evidence is thin, describe what WAS found, and leave absence unstated — the report handles absence with fixed wording.
+4. Attribute to files where natural ("the package manifest declares…", "the workflows directory contains…").
+5. Two to four sentences. Plain language. No bullet lists in the narrative.
+
+Write in plain, neutral language.`;
+
 export const SYSTEM_PROMPT = `You are an analysis assistant supporting human judges at a hackathon.
 
 You produce evidence and summaries. You do NOT judge.

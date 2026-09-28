@@ -1,17 +1,22 @@
 import { v } from "convex/values";
-import type { FunctionReference } from "convex/server";
 import {
   action,
   internalMutation,
   internalQuery,
   query,
-  type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireRole } from "./lib/authorization";
 import { getCurrentHackathon } from "./lib/resolve";
 import { ROLES } from "./schema";
+import {
+  actionUser,
+  judgeAccess,
+  isJudgeAssigned,
+  hasConflict,
+  type ActionUser,
+} from "./lib/actionAuth";
 import { AIProviderError, getAIProvider, type ChatTurn } from "./lib/aiProvider";
 import {
   CHAT_SCHEMA,
@@ -57,139 +62,10 @@ const MAX_ANSWER_CHARS = 4_000;
 // ---------------------------------------------------------------------------
 // Access helpers
 // ---------------------------------------------------------------------------
-
-async function isJudgeAssigned(
-  ctx: QueryCtx,
-  judgeId: Id<"users">,
-  teamId: Id<"teams">,
-): Promise<boolean> {
-  const row = await ctx.db
-    .query("assignments")
-    .withIndex("by_judge_team", (q) =>
-      q.eq("judgeId", judgeId).eq("teamId", teamId),
-    )
-    .first();
-  return row !== null;
-}
-
-async function hasConflict(
-  ctx: QueryCtx,
-  judgeId: Id<"users">,
-  teamId: Id<"teams">,
-): Promise<boolean> {
-  const row = await ctx.db
-    .query("judgeConflicts")
-    .withIndex("by_judge_team", (q) =>
-      q.eq("judgeId", judgeId).eq("teamId", teamId),
-    )
-    .first();
-  return row !== null;
-}
-
-/**
- * Actions have no `ctx.db`, so authorization is done through internal queries:
- * resolve the Convex Auth session subject to the app user, then apply the same
- * role rules `requireRole` enforces on queries and mutations.
- */
-export const sessionUser = internalQuery({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
-    if (!user) return null;
-    return { _id: user._id, role: user.role, isActive: user.isActive };
-  },
-});
-
-export const currentHackathonMeta = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    const hackathon = await getCurrentHackathon(ctx);
-    if (!hackathon) return null;
-    return { _id: hackathon._id, blindJudging: hackathon.blindJudging };
-  },
-});
-
-export const assignmentAccess = internalQuery({
-  args: { judgeId: v.id("users"), teamId: v.id("teams") },
-  handler: async (ctx, args) => {
-    return {
-      assigned: await isJudgeAssigned(ctx, args.judgeId, args.teamId),
-      conflict: await hasConflict(ctx, args.judgeId, args.teamId),
-    };
-  },
-});
-
-type ActionRole = "judge" | "admin";
-type ActionUser = { _id: Id<"users">; role: ActionRole };
-
-/**
- * Minimal action context used by the shared helpers. Structural (rather than
- * the full GenericActionCtx) so the helpers stay trivially testable, while the
- * permissive runQuery signature matches how Convex types it.
- */
-type ActionCtxLike = {
-  auth: { getUserIdentity: () => Promise<{ subject: string } | null> };
-  runQuery: (
-    query: FunctionReference<"query", "public" | "internal">,
-    args: Record<string, unknown>,
-  ) => Promise<unknown>;
-  runMutation: (
-    mutation: FunctionReference<"mutation", "public" | "internal">,
-    args: Record<string, unknown>,
-  ) => Promise<unknown>;
-};
-
-/**
- * Shared action-side authentication: the caller must be a judge or an admin.
- * Returns a discriminated result so call sites narrow cleanly. Runs through
- * internal queries because actions have no `ctx.db`.
- */
-async function actionUser(
-  ctx: ActionCtxLike,
-): Promise<{ ok: true; user: ActionUser } | { ok: false; error: string }> {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
-    return { ok: false, error: "You must be signed in to do that." };
-  }
-  // Convex Auth session tokens carry a composite subject ("userId|sessionId");
-  // the users-table id is the segment before the separator.
-  const userId = identity.subject.split("|")[0] as Id<"users">;
-  const user = (await ctx.runQuery(internal.copilot.sessionUser, {
-    userId,
-  })) as { _id: Id<"users">; role: "admin" | "judge" | "participant" } | null;
-  if (!user) {
-    return { ok: false, error: "You must be signed in to do that." };
-  }
-  if (user.role !== "judge" && user.role !== "admin") {
-    return {
-      ok: false,
-      error: user.role
-        ? `The AI copilot is available to judges and admins. You are signed in as ${user.role}.`
-        : "Your account has not been granted a role for this hackathon yet.",
-    };
-  }
-  return { ok: true, user: { _id: user._id, role: user.role } };
-}
-
-/** Assignment + conflict gate shared by `generate` and `chat`. */
-async function judgeAccess(
-  ctx: ActionCtxLike,
-  user: ActionUser,
-  teamId: Id<"teams">,
-): Promise<string | null> {
-  if (user.role !== ROLES.JUDGE) return null; // admins are unrestricted
-  const access = (await ctx.runQuery(internal.copilot.assignmentAccess, {
-    judgeId: user._id,
-    teamId,
-  })) as { assigned: boolean; conflict: boolean };
-  if (!access.assigned) {
-    return "You are not assigned to this team.";
-  }
-  if (access.conflict) {
-    return "You have been stood down from this submission due to a declared conflict of interest.";
-  }
-  return null;
-}
+// Authorization lives in lib/actionAuth (shared with the GitHub analyzer):
+// sessionUser / currentHackathonMeta / assignmentAccess internal queries and
+// the actionUser / judgeAccess / isJudgeAssigned / hasConflict helpers.
+// They are imported at the top of this file.
 
 // ---------------------------------------------------------------------------
 // Read
@@ -283,7 +159,10 @@ export const generate = action({
     if (!auth.ok) return { ok: false, error: auth.error };
     const user = auth.user;
 
-    const hackathon = await ctx.runQuery(internal.copilot.currentHackathonMeta, {});
+    const hackathon = await ctx.runQuery(
+      internal.lib.actionAuth.currentHackathonMeta,
+      {},
+    );
     if (!hackathon) {
       return { ok: false, error: "No hackathon is currently active." };
     }
@@ -465,7 +344,10 @@ export const chat = action({
       return { ok: false, error: "Ask a question about the submission first." };
     }
 
-    const hackathon = await ctx.runQuery(internal.copilot.currentHackathonMeta, {});
+    const hackathon = await ctx.runQuery(
+      internal.lib.actionAuth.currentHackathonMeta,
+      {},
+    );
     if (!hackathon) {
       return { ok: false, error: "No hackathon is currently active." };
     }

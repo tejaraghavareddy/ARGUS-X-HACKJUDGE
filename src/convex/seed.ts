@@ -709,6 +709,14 @@ export const seed = mutation({
       const isUnsubmitted = index === 2 || index === TEAMS.length - 1;
 
       const slug = team.project.toLowerCase().replace(/\s+/g, "-");
+      // A few demo teams point at real public repositories so the GitHub
+      // repository analyzer has live targets during a demo; the rest keep
+      // placeholder URLs.
+      const REAL_REPOS: Record<string, string> = {
+        "nebula-care": "https://github.com/vercel/next.js",
+        "forge-ci": "https://github.com/expressjs/express",
+        "signbridge": "https://github.com/huggingface/transformers",
+      };
       // The last team is left as an in-progress draft so the participant
       // dashboard has a real partial submission to show, and so the admin
       // oversight screens surface an uncovered gap.
@@ -732,7 +740,7 @@ export const seed = mutation({
         futureScope: partial
           ? ""
           : "Next: multi-tenancy, an offline mode for teams without reliable connectivity, and a public API so other tooling can read the results.",
-        githubUrl: `https://github.com/rapture/${slug}`,
+        githubUrl: REAL_REPOS[slug] ?? `https://github.com/rapture/${slug}`,
         liveDemoUrl: `https://${slug}.rapture.dev`,
         demoVideoUrl: `https://www.youtube.com/watch?v=rapture${index + 1}`,
         ...(isUnsubmitted

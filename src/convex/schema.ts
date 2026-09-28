@@ -118,6 +118,35 @@ const projectBrief = v.object({
   missingInformation: v.array(v.string()),
 });
 
+// ---------------------------------------------------------------------------
+// GitHub repository analysis
+// ---------------------------------------------------------------------------
+
+/**
+ * One detected piece of technical evidence, with the file or payload that
+ * shows it. Detection is deterministic (pattern/structure matching over the
+ * public GitHub API), so `source` is always a real location in the scan,
+ * never a model attribution.
+ */
+const repoEvidence = v.object({
+  label: v.string(),
+  source: v.string(),
+  detail: v.optional(v.string()),
+});
+
+/**
+ * One analysis dimension of the report. When nothing was detected, `evidence`
+ * is empty AND `noEvidence` is true; the UI then renders the fixed wording
+ * "Supporting evidence was not identified in the analyzed repository." A
+ * section never stores an inference that a capability is absent.
+ */
+const repoSection = v.object({
+  key: v.string(),
+  title: v.string(),
+  evidence: v.array(repoEvidence),
+  noEvidence: v.boolean(),
+});
+
 const schema = defineSchema(
   {
     // default auth tables using convex auth.
@@ -404,6 +433,54 @@ const schema = defineSchema(
       // Changes whenever the submission's content changes, so a stale brief is
       // never presented as current.
       inputHash: v.string(),
+    })
+      .index("by_submission", ["submissionId"])
+      .index("by_team", ["teamId"])
+      .index("by_hackathon", ["hackathonId"]),
+
+    /**
+     * GitHub repository analysis for a submission.
+     *
+     * SEPARATE from `scores`, like `judgingBriefs`: no server function derives,
+     * writes, adjusts or reads a score through this table. A repo report is
+     * advisory technical evidence for a human judge, nothing more.
+     *
+     * The report is produced deterministically from the public GitHub API
+     * (plus an optional neutral LLM narrative); it never asserts that a
+     * capability is absent — thin evidence is worded as "not identified in
+     * the analyzed repository" with the scan's coverage limits stated.
+     */
+    repoAnalyses: defineTable({
+      hackathonId: v.id("hackathons"),
+      submissionId: v.id("submissions"),
+      teamId: v.id("teams"),
+      // "ready" reports are safe to show; "failed" rows exist so the judge
+      // sees why nothing loaded and gets a retry rather than a blank space.
+      status: v.union(v.literal("ready"), v.literal("failed")),
+      error: v.optional(v.string()),
+      // Resolved repository coordinates and how the scan was performed.
+      repoFullName: v.optional(v.string()),
+      repoUrl: v.optional(v.string()),
+      requestedUrl: v.optional(v.string()),
+      // Only "public" today; the field exists so authenticated/org repos or
+      // other sources can be added without a migration.
+      visibility: v.union(v.literal("public")),
+      // What the analyzer actually had access to, so coverage limits are
+      // always stated next to the findings.
+      scanCoverage: v.object({
+        treeEntries: v.number(),
+        filesRead: v.number(),
+        truncated: v.boolean(),
+        warning: v.optional(v.string()),
+      }),
+      sections: v.array(repoSection),
+      summary: v.string(),
+      verification: v.array(v.string()),
+      // Populated only when the optional narrative layer ran successfully.
+      narrative: v.optional(v.string()),
+      narrativeProvider: v.optional(v.string()),
+      narrativeModel: v.optional(v.string()),
+      fetchedAt: v.number(),
     })
       .index("by_submission", ["submissionId"])
       .index("by_team", ["teamId"])
