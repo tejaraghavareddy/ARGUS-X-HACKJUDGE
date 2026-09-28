@@ -1,17 +1,30 @@
 import { v } from "convex/values";
-import { action, internalMutation, query } from "./_generated/server";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { FunctionReference } from "convex/server";
+import {
+  action,
+  internalMutation,
+  internalQuery,
+  query,
+  type QueryCtx,
+} from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { requireRole } from "./lib/authorization";
 import { getCurrentHackathon } from "./lib/resolve";
 import { ROLES } from "./schema";
+import { AIProviderError, getAIProvider, type ChatTurn } from "./lib/aiProvider";
 import {
-  API_KEY_ENV_VAR,
-  BRIEF_TOOL,
+  CHAT_SCHEMA,
+  CHAT_SYSTEM_PROMPT,
   DEFAULT_MODEL,
   MODEL_ENV_VAR,
+  PROVIDER_NAME,
   SYSTEM_PROMPT,
+  buildBriefSchema,
   buildSourceText,
+  cleanStrings,
   groundClaims,
+  groundQuotes,
   hashSource,
   normalizeForGrounding,
   sanitizeCriteria,
@@ -20,46 +33,162 @@ import {
 } from "./lib/copilot";
 
 /**
- * AI Judge Copilot.
+ * AI Judge Copilot — server-side AI service layer.
+ *
+ * Flow: Judge UI → this action → `AIProvider` (Gemini REST, key held only in
+ * the server environment) → structured JSON → verbatim grounding check →
+ * `judgingBriefs` table → judge UI. No UI component ever talks to the AI
+ * vendor or sees the key; they only call these Convex functions.
  *
  * What lives here can produce evidence, summaries and questions. What cannot
  * live here is a score: this module contains no reference to the `scores`
- * table at all, and `lib/audit` plus the schema keep generated output in its
- * own table. The strongest version of "the AI never assigns a score" is the one
- * where the code has no ability to.
+ * table at all, and the schema keeps generated output in its own table. The
+ * strongest version of "the AI never assigns a score" is the one where the
+ * code has no ability to.
  *
  * Access follows exactly the same rules as the rest of the judge workspace:
  * you must have an assignment, and a declared conflict of interest removes it.
  */
 
 const MAX_SOURCE_CHARS = 24_000;
+const MAX_CHAT_HISTORY = 8;
+const MAX_ANSWER_CHARS = 4_000;
 
-function isJudgeAssigned(
-  ctx: any,
+// ---------------------------------------------------------------------------
+// Access helpers
+// ---------------------------------------------------------------------------
+
+async function isJudgeAssigned(
+  ctx: QueryCtx,
   judgeId: Id<"users">,
   teamId: Id<"teams">,
 ): Promise<boolean> {
-  return ctx.db
+  const row = await ctx.db
     .query("assignments")
-    .withIndex("by_judge_team", (q: any) =>
+    .withIndex("by_judge_team", (q) =>
       q.eq("judgeId", judgeId).eq("teamId", teamId),
     )
-    .first()
-    .then((row) => row !== null);
+    .first();
+  return row !== null;
 }
 
 async function hasConflict(
-  ctx: any,
+  ctx: QueryCtx,
   judgeId: Id<"users">,
   teamId: Id<"teams">,
 ): Promise<boolean> {
   const row = await ctx.db
     .query("judgeConflicts")
-    .withIndex("by_judge_team", (q: any) =>
+    .withIndex("by_judge_team", (q) =>
       q.eq("judgeId", judgeId).eq("teamId", teamId),
     )
     .first();
   return row !== null;
+}
+
+/**
+ * Actions have no `ctx.db`, so authorization is done through internal queries:
+ * resolve the Convex Auth session subject to the app user, then apply the same
+ * role rules `requireRole` enforces on queries and mutations.
+ */
+export const sessionUser = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) return null;
+    return { _id: user._id, role: user.role, isActive: user.isActive };
+  },
+});
+
+export const currentHackathonMeta = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const hackathon = await getCurrentHackathon(ctx);
+    if (!hackathon) return null;
+    return { _id: hackathon._id, blindJudging: hackathon.blindJudging };
+  },
+});
+
+export const assignmentAccess = internalQuery({
+  args: { judgeId: v.id("users"), teamId: v.id("teams") },
+  handler: async (ctx, args) => {
+    return {
+      assigned: await isJudgeAssigned(ctx, args.judgeId, args.teamId),
+      conflict: await hasConflict(ctx, args.judgeId, args.teamId),
+    };
+  },
+});
+
+type ActionRole = "judge" | "admin";
+type ActionUser = { _id: Id<"users">; role: ActionRole };
+
+/**
+ * Minimal action context used by the shared helpers. Structural (rather than
+ * the full GenericActionCtx) so the helpers stay trivially testable, while the
+ * permissive runQuery signature matches how Convex types it.
+ */
+type ActionCtxLike = {
+  auth: { getUserIdentity: () => Promise<{ subject: string } | null> };
+  runQuery: (
+    query: FunctionReference<"query", "public" | "internal">,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
+  runMutation: (
+    mutation: FunctionReference<"mutation", "public" | "internal">,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
+};
+
+/**
+ * Shared action-side authentication: the caller must be a judge or an admin.
+ * Returns a discriminated result so call sites narrow cleanly. Runs through
+ * internal queries because actions have no `ctx.db`.
+ */
+async function actionUser(
+  ctx: ActionCtxLike,
+): Promise<{ ok: true; user: ActionUser } | { ok: false; error: string }> {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    return { ok: false, error: "You must be signed in to do that." };
+  }
+  // Convex Auth session tokens carry a composite subject ("userId|sessionId");
+  // the users-table id is the segment before the separator.
+  const userId = identity.subject.split("|")[0] as Id<"users">;
+  const user = (await ctx.runQuery(internal.copilot.sessionUser, {
+    userId,
+  })) as { _id: Id<"users">; role: "admin" | "judge" | "participant" } | null;
+  if (!user) {
+    return { ok: false, error: "You must be signed in to do that." };
+  }
+  if (user.role !== "judge" && user.role !== "admin") {
+    return {
+      ok: false,
+      error: user.role
+        ? `The AI copilot is available to judges and admins. You are signed in as ${user.role}.`
+        : "Your account has not been granted a role for this hackathon yet.",
+    };
+  }
+  return { ok: true, user: { _id: user._id, role: user.role } };
+}
+
+/** Assignment + conflict gate shared by `generate` and `chat`. */
+async function judgeAccess(
+  ctx: ActionCtxLike,
+  user: ActionUser,
+  teamId: Id<"teams">,
+): Promise<string | null> {
+  if (user.role !== ROLES.JUDGE) return null; // admins are unrestricted
+  const access = (await ctx.runQuery(internal.copilot.assignmentAccess, {
+    judgeId: user._id,
+    teamId,
+  })) as { assigned: boolean; conflict: boolean };
+  if (!access.assigned) {
+    return "You are not assigned to this team.";
+  }
+  if (access.conflict) {
+    return "You have been stood down from this submission due to a declared conflict of interest.";
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +215,7 @@ export const briefForSubmission = query({
 
     const brief = await ctx.db
       .query("judgingBriefs")
-      .withIndex("by_team", (q: any) => q.eq("teamId", args.teamId))
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
       .first();
 
     if (!brief) return { state: "missing" as const, brief: null };
@@ -94,6 +223,7 @@ export const briefForSubmission = query({
     return {
       state: brief.status,
       error: brief.error ?? null,
+      provider: brief.provider,
       model: brief.model,
       generatedAt: brief.generatedAt,
       droppedUnverified: brief.droppedUnverified,
@@ -105,35 +235,83 @@ export const briefForSubmission = query({
 });
 
 // ---------------------------------------------------------------------------
-// Generate
+// Generate (submission analysis)
 // ---------------------------------------------------------------------------
+
+/** Normalize the raw brief object the model returned into stored shape. */
+function briefFromRaw(
+  rawBrief: Record<string, unknown>,
+  sourceNormalized: string,
+): { brief: ProjectBrief; dropped: number } {
+  const innovation = groundClaims(rawBrief.innovationIndicators, sourceNormalized, 5);
+  const impact = groundClaims(rawBrief.impactIndicators, sourceNormalized, 5);
+  const implementation = groundClaims(
+    rawBrief.implementationIndicators,
+    sourceNormalized,
+    5,
+  );
+
+  const brief: ProjectBrief = {
+    executiveSummary: (rawBrief.executiveSummary ?? "").toString().slice(0, 2000),
+    problemSummary: (rawBrief.problemSummary ?? "").toString().slice(0, 2000),
+    solution: (rawBrief.solution ?? "").toString().slice(0, 2000),
+    targetUsers: (rawBrief.targetUsers ?? "").toString().slice(0, 2000),
+    keyFeatures: cleanStrings(rawBrief.keyFeatures, 10, 400),
+    techStack: cleanStrings(rawBrief.techStack, 15, 100),
+    architectureSummary: (rawBrief.architectureSummary ?? "")
+      .toString()
+      .slice(0, 2000),
+    innovationIndicators: innovation.verified,
+    impactIndicators: impact.verified,
+    implementationIndicators: implementation.verified,
+    missingInformation: cleanStrings(rawBrief.missingInformation, 8, 400),
+  };
+
+  return {
+    brief,
+    dropped: innovation.dropped + impact.dropped + implementation.dropped,
+  };
+}
 
 export const generate = action({
   args: { teamId: v.id("teams") },
-  handler: async (ctx, args): Promise<{ ok: boolean; error?: string }> => {
-    const user = await requireRole(ctx, ROLES.JUDGE, ROLES.ADMIN);
-    const hackathon = await getCurrentHackathon(ctx);
-    if (!hackathon) return { ok: false, error: "No hackathon is currently active." };
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ ok: boolean; error?: string; droppedUnverified?: number }> => {
+    const auth = await actionUser(ctx);
+    if (!auth.ok) return { ok: false, error: auth.error };
+    const user = auth.user;
 
-    // Re-checked inside the action, not just in the query above: the action runs
-    // in a different context and must stand on its own.
-    if (user.role === ROLES.JUDGE) {
-      if (!(await isJudgeAssigned(ctx, user._id, args.teamId))) {
-        return { ok: false, error: "You are not assigned to this team." };
-      }
-      if (await hasConflict(ctx, user._id, args.teamId)) {
-        return {
-          ok: false,
-          error:
-            "You have been stood down from this submission due to a declared conflict of interest.",
-        };
-      }
+    const hackathon = await ctx.runQuery(internal.copilot.currentHackathonMeta, {});
+    if (!hackathon) {
+      return { ok: false, error: "No hackathon is currently active." };
     }
 
-    const apiKey = process.env[API_KEY_ENV_VAR];
-    if (!apiKey) {
-      const message = `No AI key is configured. Add ${API_KEY_ENV_VAR} in the project's Keys settings and try again.`;
-      await ctx.runMutation(internal.saveFailedBrief, {
+    // Re-checked inside the action, not just in the read query above: the
+    // action runs in a different context and must stand on its own.
+    const accessError = await judgeAccess(ctx, user, args.teamId);
+    if (accessError) return { ok: false, error: accessError };
+
+    const submission = await ctx.runQuery(internal.copilot.submissionSource, {
+      teamId: args.teamId,
+    });
+    if (!submission) {
+      return { ok: false, error: "This team has no submission to analyse yet." };
+    }
+
+    // Resolve the provider through the abstraction. A missing/invalid key is a
+    // configuration problem, recorded as a failed brief so the judge sees the
+    // reason and a retry rather than a blank space.
+    let provider;
+    try {
+      provider = getAIProvider();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The AI service is not configured.";
+      await ctx.runMutation(internal.copilot.saveFailedBrief, {
         hackathonId: hackathon._id,
         teamId: args.teamId,
         error: message,
@@ -141,18 +319,15 @@ export const generate = action({
       return { ok: false, error: message };
     }
 
-    const model = process.env[MODEL_ENV_VAR] || DEFAULT_MODEL;
-
-    const submission = await ctx.runQuery(internal.submissionSource, {
-      teamId: args.teamId,
-    });
-    if (!submission) {
-      return { ok: false, error: "This team has no submission to analyse yet." };
-    }
-
-    const criteria = await ctx.runQuery(internal.criterionNames, {
+    const criteria = await ctx.runQuery(internal.copilot.criterionNames, {
       hackathonId: hackathon._id,
     });
+    if (criteria.length === 0) {
+      return {
+        ok: false,
+        error: "No judging criteria are configured for this hackathon.",
+      };
+    }
 
     // The source text is truncated to a hard ceiling BEFORE it is hashed, so
     // the hash describes exactly what the model saw.
@@ -178,7 +353,7 @@ export const generate = action({
       .map((c) => `- "${c.name}": ${c.description}`)
       .join("\n");
 
-    const userPrompt = `JUDGING CRITERIA (use these EXACT names as keys in \`criteria\`):
+    const userPrompt = `JUDGING CRITERIA (use these EXACT names as the \`criterion\` value of each \`criteria\` entry):
 ${criterionLines}
 
 SUBMISSION TEXT (this is the ONLY source of information you have; attached documents are listed by name only and their contents were NOT provided):
@@ -186,62 +361,31 @@ SUBMISSION TEXT (this is the ONLY source of information you have; attached docum
 ${sourceText}
 </submission>
 
-Produce the brief and one \`criteria\` entry per criterion above.`;
+Produce the brief and one \`criteria\` entry for EVERY criterion listed above.`;
 
     let parsed: unknown;
+    let providerName: string;
+    let modelUsed: string;
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 8000,
-          system: SYSTEM_PROMPT,
-          tools: [BRIEF_TOOL],
-          // Force the model to use the tool rather than reply in prose.
-          tool_choice: { type: "tool", name: BRIEF_TOOL.name },
-          messages: [{ role: "user", content: userPrompt }],
-        }),
+      const result = await provider.generateStructured({
+        system: SYSTEM_PROMPT,
+        prompt: userPrompt,
+        schema: buildBriefSchema(criteria.map((c) => c.name)),
+        schemaName: "judging_brief",
+        schemaDescription:
+          "Structured, evidence-grounded analysis of one hackathon submission.",
       });
-
-      if (!response.ok) {
-        const detail = await response.text();
-        // Surface the provider's own message; a bad model id or a missing key
-        // should be diagnosable from the judge's error state.
-        const message = `The AI service returned ${response.status}: ${detail.slice(0, 300)}`;
-        await ctx.runMutation(internal.saveFailedBrief, {
-          hackathonId: hackathon._id,
-          teamId: args.teamId,
-          error: message,
-        });
-        return { ok: false, error: message };
-      }
-
-      const payload = (await response.json()) as {
-        content?: { type: string; name?: string; input?: unknown }[];
-      };
-      const toolUse = payload.content?.find(
-        (block) => block.type === "tool_use" && block.name === BRIEF_TOOL.name,
-      );
-      if (!toolUse?.input) {
-        const message = "The AI service did not return a usable analysis.";
-        await ctx.runMutation(internal.saveFailedBrief, {
-          hackathonId: hackathon._id,
-          teamId: args.teamId,
-          error: message,
-        });
-        return { ok: false, error: message };
-      }
-      parsed = toolUse.input;
+      parsed = result.parsed;
+      providerName = result.provider;
+      modelUsed = result.model;
     } catch (error) {
-      const message = `Could not reach the AI service: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
-      await ctx.runMutation(internal.saveFailedBrief, {
+      const message =
+        error instanceof AIProviderError
+          ? error.message
+          : `Could not reach the AI service: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+      await ctx.runMutation(internal.copilot.saveFailedBrief, {
         hackathonId: hackathon._id,
         teamId: args.teamId,
         error: message,
@@ -256,45 +400,23 @@ Produce the brief and one \`criteria\` entry per criterion above.`;
     const raw = (parsed ?? {}) as Record<string, unknown>;
     const rawBrief = (raw.brief ?? {}) as Record<string, unknown>;
 
-    const innovation = groundClaims(rawBrief.innovationIndicators, sourceNormalized, 5);
-    const impact = groundClaims(rawBrief.impactIndicators, sourceNormalized, 5);
-    const implementation = groundClaims(
-      rawBrief.implementationIndicators,
-      sourceNormalized,
-      5,
-    );
-    const { criteria: sanitizedCriteria, dropped: criteriaDropped } = sanitizeCriteria(
-      raw.criteria,
-      criteria.map((c) => c.name),
-      sourceNormalized,
-    );
+    const { brief, dropped: briefDropped } = briefFromRaw(rawBrief, sourceNormalized);
+    const { criteria: sanitizedCriteria, dropped: criteriaDropped } =
+      sanitizeCriteria(
+        raw.criteria,
+        criteria.map((c) => c.name),
+        sourceNormalized,
+      );
 
-    const brief: ProjectBrief = {
-      executiveSummary: (rawBrief.executiveSummary ?? "").toString().slice(0, 2000),
-      problemSummary: (rawBrief.problemSummary ?? "").toString().slice(0, 2000),
-      solution: (rawBrief.solution ?? "").toString().slice(0, 2000),
-      targetUsers: (rawBrief.targetUsers ?? "").toString().slice(0, 2000),
-      keyFeatures: cleanStrings(rawBrief.keyFeatures),
-      techStack: cleanStrings(rawBrief.techStack),
-      architectureSummary: (rawBrief.architectureSummary ?? "")
-        .toString()
-        .slice(0, 2000),
-      innovationIndicators: innovation.verified,
-      impactIndicators: impact.verified,
-      implementationIndicators: implementation.verified,
-      missingInformation: cleanStrings(rawBrief.missingInformation, 8, 400),
-    };
-
-    const droppedUnverified =
-      innovation.dropped + impact.dropped + implementation.dropped + criteriaDropped;
-
+    const droppedUnverified = briefDropped + criteriaDropped;
     const result: CopilotOutput = { brief, criteria: sanitizedCriteria };
 
-    await ctx.runMutation(internal.saveBrief, {
+    await ctx.runMutation(internal.copilot.saveBrief, {
       hackathonId: hackathon._id,
       submissionId: submission.submissionId,
       teamId: args.teamId,
-      model,
+      provider: providerName,
+      model: modelUsed,
       inputHash: hashSource(sourceText),
       droppedUnverified,
       result,
@@ -304,147 +426,268 @@ Produce the brief and one \`criteria\` entry per criterion above.`;
   },
 });
 
-function cleanStrings(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((v): v is string => typeof v === "string")
-    .map((v) => v.trim().slice(0, 400))
-    .filter(Boolean)
-    .slice(0, 10);
-}
+// ---------------------------------------------------------------------------
+// Chat about the current submission
+// ---------------------------------------------------------------------------
+
+export const chat = action({
+  args: {
+    teamId: v.id("teams"),
+    message: v.string(),
+    history: v.optional(
+      v.array(
+        v.object({
+          role: v.union(v.literal("user"), v.literal("model")),
+          text: v.string(),
+        }),
+      ),
+    ),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<
+    | {
+        ok: true;
+        answer: string;
+        quotes: string[];
+        notInSource: boolean;
+        dropped: number;
+      }
+    | { ok: false; error: string }
+  > => {
+    const auth = await actionUser(ctx);
+    if (!auth.ok) return { ok: false, error: auth.error };
+    const user = auth.user;
+
+    const question = args.message.trim().slice(0, 2000);
+    if (!question) {
+      return { ok: false, error: "Ask a question about the submission first." };
+    }
+
+    const hackathon = await ctx.runQuery(internal.copilot.currentHackathonMeta, {});
+    if (!hackathon) {
+      return { ok: false, error: "No hackathon is currently active." };
+    }
+
+    const accessError = await judgeAccess(ctx, user, args.teamId);
+    if (accessError) return { ok: false, error: accessError };
+
+    const submission = await ctx.runQuery(internal.copilot.submissionSource, {
+      teamId: args.teamId,
+    });
+    if (!submission) {
+      return { ok: false, error: "This team has no submission to discuss yet." };
+    }
+
+    let provider;
+    try {
+      provider = getAIProvider();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The AI service is not configured.";
+      return { ok: false, error: message };
+    }
+
+    const sourceText = buildSourceText(
+      {
+        projectName: submission.projectName,
+        techStack: submission.techStack,
+        problemStatement: submission.problemStatement,
+        solutionDescription: submission.solutionDescription,
+        targetUsers: submission.targetUsers,
+        keyFeatures: submission.keyFeatures,
+        innovation: submission.innovation,
+        expectedImpact: submission.expectedImpact,
+        implementationDetails: submission.implementationDetails,
+        futureScope: submission.futureScope,
+        abstract: submission.abstract,
+        documentNames: submission.documentNames,
+      },
+      hackathon.blindJudging,
+    ).slice(0, MAX_SOURCE_CHARS);
+
+    // Cap and clean the client-supplied history: the model sees only recent,
+    // bounded turns, and nothing the client sent can change the source text.
+    const history: ChatTurn[] = (args.history ?? [])
+      .slice(-MAX_CHAT_HISTORY)
+      .filter((m) => m.text.trim().length > 0)
+      .map((m) => ({ role: m.role, text: m.text.slice(0, 4000) }));
+
+    try {
+      const result = await provider.generateStructured({
+        system: `${CHAT_SYSTEM_PROMPT}\n\nSUBMISSION TEXT (the ONLY source of information you have):\n<submission>\n${sourceText}\n</submission>`,
+        prompt: question,
+        schema: CHAT_SCHEMA as unknown as Record<string, unknown>,
+        schemaName: "judge_chat_answer",
+        schemaDescription: "A grounded answer about one hackathon submission.",
+        history,
+      });
+
+      const raw = (result.parsed ?? {}) as Record<string, unknown>;
+      const notInSource = raw.notInSource === true;
+      const answer = (raw.answer ?? "").toString().slice(0, MAX_ANSWER_CHARS);
+
+      // Same trust boundary as the brief: quotes must be verbatim in the
+      // source text, or they are discarded (and counted). If the model says
+      // the answer is not in the source, any quotes it produced are dropped
+      // along with the claim.
+      const sourceNormalized = normalizeForGrounding(sourceText);
+      const grounded = notInSource
+        ? { verified: [], dropped: 0 }
+        : groundQuotes(raw.quotes, sourceNormalized, 5);
+
+      return {
+        ok: true,
+        answer,
+        quotes: grounded.verified,
+        notInSource,
+        dropped: grounded.dropped,
+      };
+    } catch (error) {
+      const message =
+        error instanceof AIProviderError
+          ? error.message
+          : `Could not reach the AI service: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+      return { ok: false, error: message };
+    }
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
 
-export const internal = {
-  /** The submission fields the copilot is allowed to read. */
-  submissionSource: internalMutation({
-    args: { teamId: v.id("teams") },
-    handler: async (ctx, args) => {
-      const submission = await ctx.db
-        .query("submissions")
-        .withIndex("by_team", (q: any) => q.eq("teamId", args.teamId))
-        .unique();
-      if (!submission) return null;
+/** The submission fields the copilot is allowed to read. */
+export const submissionSource = internalQuery({
+  args: { teamId: v.id("teams") },
+  handler: async (ctx, args) => {
+    const submission = await ctx.db
+      .query("submissions")
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+      .unique();
+    if (!submission) return null;
 
-      const [team, files] = await Promise.all([
-        ctx.db.get(args.teamId),
-        ctx.db
-          .query("submissionFiles")
-          .withIndex("by_team", (q: any) => q.eq("teamId", args.teamId))
-          .collect(),
-      ]);
+    const [team, files] = await Promise.all([
+      ctx.db.get(args.teamId),
+      ctx.db
+        .query("submissionFiles")
+        .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+        .collect(),
+    ]);
 
-      return {
-        submissionId: submission._id as Id<"submissions">,
-        projectName: team?.projectName ?? "",
-        techStack: team?.techStack ?? [],
-        problemStatement: submission.problemStatement ?? null,
-        solutionDescription: submission.solutionDescription ?? null,
-        targetUsers: submission.targetUsers ?? null,
-        keyFeatures: submission.keyFeatures ?? [],
-        innovation: submission.innovation ?? null,
-        expectedImpact: submission.expectedImpact ?? null,
-        implementationDetails: submission.implementationDetails ?? null,
-        futureScope: submission.futureScope ?? null,
-        abstract: submission.abstract ?? null,
-        documentNames: files.map((f) => f.fileName),
-      };
-    },
-  }),
+    return {
+      submissionId: submission._id as Id<"submissions">,
+      projectName: team?.projectName ?? "",
+      techStack: team?.techStack ?? [],
+      problemStatement: submission.problemStatement ?? null,
+      solutionDescription: submission.solutionDescription ?? null,
+      targetUsers: submission.targetUsers ?? null,
+      keyFeatures: submission.keyFeatures ?? [],
+      innovation: submission.innovation ?? null,
+      expectedImpact: submission.expectedImpact ?? null,
+      implementationDetails: submission.implementationDetails ?? null,
+      futureScope: submission.futureScope ?? null,
+      abstract: submission.abstract ?? null,
+      documentNames: files.map((f) => f.fileName),
+    };
+  },
+});
 
-  criterionNames: internalMutation({
-    args: { hackathonId: v.id("hackathons") },
-    handler: async (ctx, args) => {
-      const rows = await ctx.db
-        .query("judgingCriteria")
-        .withIndex("by_hackathon", (q: any) =>
-          q.eq("hackathonId", args.hackathonId),
-        )
-        .collect();
-      return rows
-        .sort((a, b) => a.order - b.order)
-        .map((c) => ({ name: c.name, description: c.description }));
-    },
-  }),
+export const criterionNames = internalQuery({
+  args: { hackathonId: v.id("hackathons") },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("judgingCriteria")
+      .withIndex("by_hackathon", (q) => q.eq("hackathonId", args.hackathonId))
+      .collect();
+    return rows
+      .sort((a, b) => a.order - b.order)
+      .map((c) => ({ name: c.name, description: c.description }));
+  },
+});
 
-  /**
-   * Persist a verified brief. Any previous brief for the same team is replaced,
-   * so a regeneration never leaves two contradictory analyses in place.
-   *
-   * Note what this mutation does NOT do: it never touches `scores`.
-   */
-  saveBrief: internalMutation({
-    args: {
-      hackathonId: v.id("hackathons"),
-      submissionId: v.id("submissions"),
-      teamId: v.id("teams"),
-      model: v.string(),
-      inputHash: v.string(),
-      droppedUnverified: v.number(),
-      result: v.any(),
-    },
-    handler: async (ctx, args) => {
-      for (const existing of await ctx.db
-        .query("judgingBriefs")
-        .withIndex("by_team", (q: any) => q.eq("teamId", args.teamId))
-        .collect()) {
-        await ctx.db.delete(existing._id);
-      }
+/**
+ * Persist a verified brief. Any previous brief for the same team is replaced,
+ * so a regeneration never leaves two contradictory analyses in place.
+ *
+ * Note what this mutation does NOT do: it never touches `scores`.
+ */
+export const saveBrief = internalMutation({
+  args: {
+    hackathonId: v.id("hackathons"),
+    submissionId: v.id("submissions"),
+    teamId: v.id("teams"),
+    provider: v.string(),
+    model: v.string(),
+    inputHash: v.string(),
+    droppedUnverified: v.number(),
+    result: v.any(),
+  },
+  handler: async (ctx, args) => {
+    for (const existing of await ctx.db
+      .query("judgingBriefs")
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+      .collect()) {
+      await ctx.db.delete(existing._id);
+    }
 
-      const result = args.result as CopilotOutput;
-      const briefDoc: Doc<"judgingBriefs"> = {
-        hackathonId: args.hackathonId,
-        submissionId: args.submissionId,
-        teamId: args.teamId,
-        status: "ready" as const,
-        model: args.model,
-        brief: result.brief,
-        criteria: result.criteria,
-        generatedAt: Date.now(),
-        droppedUnverified: args.droppedUnverified,
-        inputHash: args.inputHash,
-      };
-      return await ctx.db.insert("judgingBriefs", briefDoc);
-    },
-  }),
+    const result = args.result as CopilotOutput;
+    return await ctx.db.insert("judgingBriefs", {
+      hackathonId: args.hackathonId,
+      submissionId: args.submissionId,
+      teamId: args.teamId,
+      status: "ready" as const,
+      provider: args.provider,
+      model: args.model,
+      brief: result.brief,
+      criteria: result.criteria,
+      generatedAt: Date.now(),
+      droppedUnverified: args.droppedUnverified,
+      inputHash: args.inputHash,
+    });
+  },
+});
 
-  /** Record a failure so the judge sees why, with a retry, instead of a blank. */
-  saveFailedBrief: internalMutation({
-    args: {
-      hackathonId: v.id("hackathons"),
-      teamId: v.id("teams"),
-      error: v.string(),
-    },
-    handler: async (ctx, args) => {
-      const submission = await ctx.db
-        .query("submissions")
-        .withIndex("by_team", (q: any) => q.eq("teamId", args.teamId))
-        .unique();
-      // No submission means there is nothing to analyse and nothing to retry,
-      // so the action reports that directly instead of storing a stub.
-      if (!submission) return null;
+/** Record a failure so the judge sees why, with a retry, instead of a blank. */
+export const saveFailedBrief = internalMutation({
+  args: {
+    hackathonId: v.id("hackathons"),
+    teamId: v.id("teams"),
+    error: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const submission = await ctx.db
+      .query("submissions")
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+      .unique();
+    // No submission means there is nothing to analyse and nothing to retry,
+    // so the action reports that directly instead of storing a stub.
+    if (!submission) return null;
 
-      for (const existing of await ctx.db
-        .query("judgingBriefs")
-        .withIndex("by_team", (q: any) => q.eq("teamId", args.teamId))
-        .collect()) {
-        await ctx.db.delete(existing._id);
-      }
+    for (const existing of await ctx.db
+      .query("judgingBriefs")
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+      .collect()) {
+      await ctx.db.delete(existing._id);
+    }
 
-      return await ctx.db.insert("judgingBriefs", {
-        hackathonId: args.hackathonId,
-        submissionId: submission._id,
-        teamId: args.teamId,
-        status: "failed" as const,
-        error: args.error,
-        model: process.env[MODEL_ENV_VAR] || DEFAULT_MODEL,
-        criteria: {},
-        generatedAt: Date.now(),
-        droppedUnverified: 0,
-        inputHash: "",
-      });
-    },
-  }),
-};
+    return await ctx.db.insert("judgingBriefs", {
+      hackathonId: args.hackathonId,
+      submissionId: submission._id,
+      teamId: args.teamId,
+      status: "failed" as const,
+      error: args.error.slice(0, 1000),
+      provider: PROVIDER_NAME,
+      model: process.env[MODEL_ENV_VAR]?.trim() || DEFAULT_MODEL,
+      criteria: {},
+      generatedAt: Date.now(),
+      droppedUnverified: 0,
+      inputHash: "",
+    });
+  },
+});

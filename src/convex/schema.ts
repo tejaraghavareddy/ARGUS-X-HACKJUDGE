@@ -387,8 +387,14 @@ const schema = defineSchema(
       // nothing loaded and gets a retry rather than a blank space.
       status: v.union(v.literal("ready"), v.literal("failed")),
       error: v.optional(v.string()),
+      // Which AI provider produced (or was configured for) this analysis, e.g.
+      // "gemini". Persisted with every row so history stays explainable when
+      // the provider changes later.
+      provider: v.string(),
       model: v.string(),
       brief: v.optional(projectBrief),
+      // Failed rows carry an empty record; the criteria shape itself is only
+      // meaningful for ready briefs.
       criteria: v.record(v.string(), criterionAnalysis),
       generatedAt: v.number(),
       // How many model claims failed verbatim verification and were discarded.

@@ -22,7 +22,7 @@ import {
   SectionCard,
   StatusBadge,
 } from "@/components/app/Primitives";
-import { AdvisoryPanel } from "@/components/app/AdvisoryPanel";
+import { CopilotPanel } from "@/components/app/CopilotPanel";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -54,6 +54,10 @@ export default function JudgeReview() {
   const team = teamId ? (teamId as Id<"teams">) : null;
   const data = useQuery(api.judging.reviewDetail, team ? { teamId: team } : "skip");
   const saveScore = useMutation(api.judging.saveScore);
+  const copilotBrief = useQuery(
+    api.copilot.briefForSubmission,
+    team ? { teamId: team } : "skip",
+  );
 
   const [breakdown, setBreakdown] = useState<Record<string, number>>({});
   const [criterionComments, setCriterionComments] = useState<Record<string, string>>({});
@@ -297,8 +301,12 @@ export default function JudgeReview() {
     );
   }
 
+  // Per-criterion AI evidence now comes from the copilot brief (judgingBriefs
+  // table), not the static aiReview blob.
   const evidenceFor = (criterionName: string): string[] =>
-    data.submission?.aiReview?.evidence?.[criterionName] ?? [];
+    (copilotBrief?.criteria?.[criterionName]?.evidence ?? []).map(
+      (c) => `${c.claim} — “${c.sourceQuote}”`,
+    );
 
   return (
     <AppShell role="judge">
@@ -470,7 +478,7 @@ export default function JudgeReview() {
             )}
           </SectionCard>
 
-          <AdvisoryPanel review={data.submission?.aiReview} audience="judge" />
+          {team && <CopilotPanel teamId={team} />}
 
           {!data.blindJudging && data.members.length > 0 && (
             <SectionCard title="Team members">

@@ -1,8 +1,9 @@
 /**
  * AI Judge Copilot — shared contract.
  *
- * No Convex imports, so the same constants and types drive the server action
- * and the React panel.
+ * No Convex and no vendor imports, so the same constants and types drive the
+ * server action and the React panel without leaking server-only code (and
+ * never the API key) into the client bundle.
  *
  * ---------------------------------------------------------------------------
  * The one idea this file exists to enforce
@@ -54,11 +55,72 @@ export type CopilotOutput = {
   criteria: Record<string, CriterionAnalysis>;
 };
 
-/** Overridable so the deployment is not pinned to a model that may be retired. */
-export const DEFAULT_MODEL = "claude-sonnet-5";
+// ---------------------------------------------------------------------------
+// Provider identity
+// ---------------------------------------------------------------------------
 
-export const MODEL_ENV_VAR = "ANTHROPIC_MODEL";
-export const API_KEY_ENV_VAR = "ANTHROPIC_API_KEY";
+/** Stable name persisted with every generated analysis. */
+export const PROVIDER_NAME = "gemini";
+
+/** Current stable Gemini Flash model (Google AI for Developers model guide). */
+export const DEFAULT_MODEL = "gemini-3.8-flash";
+
+/** Overridable so the deployment is not pinned to a model that may be retired. */
+export const MODEL_ENV_VAR = "GEMINI_MODEL";
+export const API_KEY_ENV_VAR = "GEMINI_API_KEY";
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+/** A prior turn of the judge's copilot chat, as the client sends it. */
+export type ChatMessage = { role: "user" | "model"; text: string };
+
+/** Structured chat answer. */
+export type ChatAnswer = {
+  answer: string;
+  /** Verbatim spans from the source text backing the answer. */
+  quotes: string[];
+  /** True when the source text simply does not contain the answer. */
+  notInSource: boolean;
+};
+
+export const CHAT_SCHEMA = {
+  type: "object",
+  properties: {
+    answer: {
+      type: "string",
+      description:
+        "Direct, neutral reply to the judge's question, using only the submission text. No scores, no verdicts.",
+    },
+    quotes: {
+      type: "array",
+      description:
+        "Verbatim spans copied exactly from the submission text that support the answer. Empty if notInSource is true.",
+      items: { type: "string" },
+      maxItems: 5,
+    },
+    notInSource: {
+      type: "boolean",
+      description:
+        "True when the submission text does not contain the information needed to answer.",
+    },
+  },
+  required: ["answer", "quotes", "notInSource"],
+} as const;
+
+export const CHAT_SYSTEM_PROMPT = `You are an analysis assistant supporting a human judge at a hackathon, answering questions about ONE submission.
+
+You answer from the submission text only. You do NOT judge.
+
+ABSOLUTE RULES
+1. Never assign, suggest, imply or predict a score, grade, rank or winner.
+2. Never introduce a fact that is not in the submission text. You have not opened any attached files — only their names were provided.
+3. Every factual statement about the submission must be backed by a verbatim span in \`quotes\`, copied character-for-character (ignoring only line wrapping) from the submission text. If you cannot quote it, do not assert it.
+4. If the submission does not contain the answer, set \`notInSource\` to true, say so plainly in \`answer\`, and return an empty \`quotes\` array. Never guess.
+5. Describe; do not evaluate. State what the text says, not whether it is good.
+
+Write in plain, neutral language. Prefer the submission's own terminology over paraphrase.`;
 
 // ---------------------------------------------------------------------------
 // Grounding
@@ -72,7 +134,7 @@ export const API_KEY_ENV_VAR = "ANTHROPIC_API_KEY";
 export function normalizeForGrounding(value: string): string {
   return value
     .toLowerCase()
-    .replace(/[\s ]+/g, " ")
+    .replace(/[\s ]+/g, " ")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -127,14 +189,67 @@ export function groundClaims(
   return { verified, dropped };
 }
 
+/** Ground a chat answer's quotes the same way: verbatim or discarded. */
+export function groundQuotes(
+  items: unknown,
+  sourceNormalized: string,
+  limit = 5,
+): { verified: string[]; dropped: number } {
+  const verified: string[] = [];
+  let dropped = 0;
+
+  if (!Array.isArray(items)) return { verified, dropped: 0 };
+
+  for (const raw of items) {
+    if (verified.length >= limit) break;
+    if (typeof raw !== "string") {
+      dropped += 1;
+      continue;
+    }
+    if (!isGrounded(raw, sourceNormalized)) {
+      dropped += 1;
+      continue;
+    }
+    verified.push(raw.trim().slice(0, 600));
+  }
+
+  return { verified, dropped };
+}
+
 /** Plain strings need no grounding, but do need bounding and cleaning. */
-function cleanStrings(value: unknown, limit = 8, maxLength = 600): string[] {
+export function cleanStrings(
+  value: unknown,
+  limit = 8,
+  maxLength = 600,
+): string[] {
   if (!Array.isArray(value)) return [];
   return value
     .filter((v): v is string => typeof v === "string")
     .map((v) => v.trim().slice(0, maxLength))
     .filter(Boolean)
     .slice(0, limit);
+}
+
+/**
+ * The model may return `criteria` either as the requested array of entries or,
+ * disobeying slightly, as an object keyed by criterion name. Both are accepted
+ * here so one loose response shape cannot turn into a runtime failure —
+ * verification still applies to whichever shape arrived.
+ */
+export function normalizeCriteriaOutput(raw: unknown): Record<string, unknown> {
+  if (Array.isArray(raw)) {
+    const out: Record<string, unknown> = {};
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const entry = item as Record<string, unknown>;
+      const name =
+        typeof entry.criterion === "string" ? entry.criterion.trim() : "";
+      if (name) out[name] = entry;
+    }
+    return out;
+  }
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  return {};
 }
 
 /**
@@ -147,7 +262,7 @@ export function sanitizeCriteria(
   criterionNames: string[],
   sourceNormalized: string,
 ): { criteria: Record<string, CriterionAnalysis>; dropped: number } {
-  const source = (raw ?? {}) as Record<string, unknown>;
+  const source = normalizeCriteriaOutput(raw);
   const criteria: Record<string, CriterionAnalysis> = {};
   let dropped = 0;
 
@@ -248,7 +363,7 @@ export function hashSource(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Model contract
+// Model contract (Gemini responseSchema)
 // ---------------------------------------------------------------------------
 
 const claimList = (description: string) => ({
@@ -269,27 +384,30 @@ const claimList = (description: string) => ({
       },
     },
     required: ["claim", "sourceQuote"],
-    additionalProperties: false,
   },
 });
 
-const stringList = (description: string) => ({
+const stringList = (description: string, maxItems: number) => ({
   type: "array",
   description,
   items: { type: "string" },
+  maxItems,
 });
 
 /**
- * The JSON tool handed to the model. Using a tool rather than free text means
- * the response is constrained to this shape by construction, so there is no
- * "sorry, I can't do that" prose path to handle.
+ * The JSON schema handed to Gemini as `responseSchema`, so the response is
+ * constrained to this shape by construction — there is no prose path.
+ *
+ * Note on shape: Gemini's responseSchema does not support map-style
+ * `additionalProperties`, so `criteria` is requested as an ARRAY with a strict
+ * `enum` on the criterion name. `normalizeCriteriaOutput` accepts either the
+ * requested array or a key-object if the model drifts.
  */
-export const BRIEF_TOOL = {
-  name: "record_brief",
-  description:
-    "Record a structured, evidence-grounded analysis of one hackathon submission.",
-  input_schema: {
-    type: "object" as const,
+export function buildBriefSchema(
+  criterionNames: string[],
+): Record<string, unknown> {
+  return {
+    type: "object",
     properties: {
       brief: {
         type: "object",
@@ -311,9 +429,13 @@ export const BRIEF_TOOL = {
             type: "string",
             description: "Who the team says this is for.",
           },
-          keyFeatures: stringList("The features the team listed, restated concisely."),
+          keyFeatures: stringList(
+            "The features the team listed, restated concisely.",
+            10,
+          ),
           techStack: stringList(
             "Technologies named in the submission. Only ones actually present in the text.",
+            15,
           ),
           architectureSummary: {
             type: "string",
@@ -331,6 +453,7 @@ export const BRIEF_TOOL = {
           ),
           missingInformation: stringList(
             "Things a judge would need that the submission does not provide. Phrase as absences, e.g. 'No test results are reported.'",
+            8,
           ),
         },
         required: [
@@ -346,15 +469,19 @@ export const BRIEF_TOOL = {
           "implementationIndicators",
           "missingInformation",
         ],
-        additionalProperties: false,
       },
       criteria: {
-        type: "object",
+        type: "array",
         description:
-          "One entry per judging criterion, keyed by the EXACT criterion name supplied in the user message. Do not add, rename or omit criteria.",
-        additionalProperties: {
+          "One entry per judging criterion. `criterion` must be EXACTLY one of the criterion names supplied in the user message. Do not add, rename or omit criteria.",
+        items: {
           type: "object",
           properties: {
+            criterion: {
+              type: "string",
+              description: "The criterion name, copied exactly as supplied.",
+              enum: criterionNames,
+            },
             evidence: claimList(
               "Verbatim-backed evidence in the submission relevant to this criterion.",
             ),
@@ -366,26 +493,27 @@ export const BRIEF_TOOL = {
             ),
             missingEvidence: stringList(
               "Evidence this criterion would need that the submission does not contain.",
+              6,
             ),
             questions: stringList(
               "Questions the judge may want to ask the team about this criterion.",
+              6,
             ),
           },
           required: [
+            "criterion",
             "evidence",
             "strengths",
             "concerns",
             "missingEvidence",
             "questions",
           ],
-          additionalProperties: false,
         },
       },
     },
     required: ["brief", "criteria"],
-    additionalProperties: false,
-  },
-};
+  };
+}
 
 export const SYSTEM_PROMPT = `You are an analysis assistant supporting human judges at a hackathon.
 
