@@ -164,7 +164,8 @@ check "blind judging off" "$(q "$ADMIN" hackathons:activeHackathon '{}' | jq -r 
 m "$ADMIN" hackathons:setFlag "{\"hackathonId\":\"$ORIG\",\"blindJudging\":true}" >/dev/null
 BD=$(q "$JUDGE" judging:myAssignments '{}')
 echo "  judge sees: $(echo "$BD" | jq -r '[.value.assignments[].teamName] | join(", ")')"
-check "all names anonymised" "$(echo "$BD" | jq -r '[.value.assignments[].teamName | startswith("Submission")] | all')" true
+# NOTE: judging:myAssignments exposes the blind label as `displayName`.
+check "all names anonymised" "$(echo "$BD" | jq -r '[.value.assignments[].displayName | startswith("Submission")] | all')" true
 check "roster withheld" "$(q "$JUDGE" judging:reviewDetail "{\"teamId\":$(echo "$BD" | jq -r '.value.assignments[0].teamId')}" | jq -r '.value.members | length')" 0
 m "$ADMIN" hackathons:setFlag "{\"hackathonId\":\"$ORIG\",\"blindJudging\":false}" >/dev/null
 check "blind judging off again" "$(q "$ADMIN" hackathons:activeHackathon '{}' | jq -r '.value.blindJudging')" false
