@@ -91,6 +91,7 @@ export const analysisForSubmission = query({
       narrative: row.narrative ?? null,
       narrativeProvider: row.narrativeProvider ?? null,
       narrativeModel: row.narrativeModel ?? null,
+      readmeExcerpt: row.readmeExcerpt ?? null,
       fetchedAt: row.fetchedAt,
     };
   },
@@ -142,6 +143,7 @@ export const saveRepoAnalysis = internalMutation({
     narrative: v.optional(v.string()),
     narrativeProvider: v.optional(v.string()),
     narrativeModel: v.optional(v.string()),
+    readmeExcerpt: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     for (const existing of await ctx.db
@@ -166,6 +168,10 @@ export const saveRepoAnalysis = internalMutation({
       narrative: args.narrative,
       narrativeProvider: args.narrativeProvider,
       narrativeModel: args.narrativeModel,
+      // The README is participant-written documentation, so it is stored so
+      // the copilot can quote it as submission evidence without re-fetching
+      // GitHub (and without burning the unauthenticated rate limit).
+      readmeExcerpt: args.readmeExcerpt,
       fetchedAt: Date.now(),
     });
   },
@@ -427,7 +433,10 @@ export const analyze = action({
       : [];
 
     // --- Fetch: README and root manifests ----------------------------------
+    // Bounded so a pathological README cannot dominate the stored row.
+    const README_EXCERPT_CHARS = 20_000;
     const files: RepoFileContent[] = [];
+    let readmeExcerpt: string | undefined;
     const readmeRes = await ghFetch(`/repos/${owner}/${repo}/readme`);
     if (readmeRes.ok) {
       const raw = readmeRes.json as { path?: string; content?: string; encoding?: string };
@@ -436,6 +445,7 @@ export const analyze = action({
           ? decodeBase64(raw.content)
           : (raw.content ?? null);
       files.push({ path: raw.path ?? "README.md", text, truncated: false });
+      if (text) readmeExcerpt = text.slice(0, README_EXCERPT_CHARS);
     }
 
     // Root manifests to read: prefer paths confirmed by the tree, but if the
@@ -536,6 +546,7 @@ export const analyze = action({
       narrative,
       narrativeProvider,
       narrativeModel,
+      readmeExcerpt,
     });
 
     return {

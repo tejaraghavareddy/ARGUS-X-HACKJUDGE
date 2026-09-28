@@ -31,7 +31,10 @@ import {
   buildBriefSchema,
   buildSourceText,
   buildCorpus,
+  buildCorpusDocuments,
+  renderCorpusBlocks,
   cleanStrings,
+  collectUploadedMaterials,
   groundClaims,
   groundQuotes,
   hashSource,
@@ -66,8 +69,6 @@ import {
 const MAX_SOURCE_CHARS = 24_000;
 /** Per-document ceiling for non-form corpus documents. */
 const MAX_DOC_CHARS = 20_000;
-/** Corpus ceiling for chat-time reuse (stored in the brief row). */
-const MAX_CORPUS_CHARS = 60_000;
 /** Ceiling for the stored, verbatim corpus handed to chat. */
 const MAX_STORED_CORPUS_CHARS = 60_000;
 /** Max uploaded files read into the corpus, in submission-file order. */
@@ -142,16 +143,16 @@ export const briefForSubmission = query({
 async function transcribePdf(
   provider: { generateStructured: (i: never) => Promise<{ parsed: unknown }> },
   pdf: { fileName: string; storageId: string },
-  getUrl: (storageId: string) => Promise<string | null>,
+  readBlob: (storageId: string) => Promise<Blob | null>,
 ): Promise<PdfTranscription> {
-  const url = await getUrl(pdf.storageId);
-  if (!url) throw new Error("no readable storage URL");
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`storage fetch failed (${response.status})`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > 15_000_000) {
+  // Read straight from file storage rather than over HTTP: no signed URL, no
+  // second round trip, and it cannot fail for reasons unrelated to the file.
+  const blob = await readBlob(pdf.storageId);
+  if (!blob) throw new Error("the stored file could not be read");
+  if (blob.size === 0 || blob.size > 15_000_000) {
     throw new Error("file too large to transcribe");
   }
+  const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = "";
   for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
   const result = await provider.generateStructured({
@@ -263,10 +264,10 @@ export const generate = action({
     // Evidence corpus: every participant-provided material the model may
     // quote from. Document 0 is the structured submission form; the GitHub
     // README and repo analysis follow; uploaded documents come last (form
-    // first, so it wins `resolveSource` ties).
+    // first, so it wins `resolveSource` ties). `buildCorpusDocuments` is the
+    // same function the pre-generation preview uses, so the judge is never
+    // shown a corpus different from the one the model receives.
     // ------------------------------------------------------------------
-    const documents: SourceDocument[] = [];
-
     const formText = buildSourceText(
       {
         projectName: submission.projectName,
@@ -284,43 +285,30 @@ export const generate = action({
       },
       hackathon.blindJudging,
     ).slice(0, MAX_SOURCE_CHARS);
-    if (formText.trim()) {
-      documents.push({ sourceId: "form", source: "Project documentation", text: formText });
-    }
 
-    if (submission.githubReadme?.text) {
-      documents.push({
-        sourceId: "github-readme",
-        source: "README (GitHub)",
-        text: submission.githubReadme.text.slice(0, MAX_DOC_CHARS),
-      });
-    }
-    if (submission.githubSummary) {
-      documents.push({
-        sourceId: "github-analysis",
-        source: "GitHub repository analysis",
-        text: submission.githubSummary.slice(0, MAX_DOC_CHARS),
-      });
-    }
+    // Reading an uploaded file means fetching it, which only an action may do.
+    const uploaded = await collectUploadedMaterials(
+      submission.uploadedFiles,
+      (storageId) => ctx.storage.get(storageId as unknown as Id<"_storage">),
+    );
 
-    // Uploaded text documents, keyed to the exact file the quote came from.
-    for (const file of submission.uploadedTexts ?? []) {
-      if (!file.text?.trim()) continue;
-      documents.push({
-        sourceId: `file:${file.fileName}`,
-        source: `Uploaded document — ${file.fileName}`,
-        text: file.text.slice(0, MAX_DOC_CHARS),
-      });
-    }
+    const built = buildCorpusDocuments({
+      formText,
+      githubReadme: submission.githubReadme,
+      githubSummary: submission.githubSummary,
+      uploadedTexts: uploaded.texts,
+      maxDocChars: MAX_DOC_CHARS,
+    });
+    const documents: SourceDocument[] = built.documents;
+    const pdfNotes: string[] = [...built.notes];
 
     // Uploaded PDFs are transcribed by the provider (multimodal) and each
     // transcribed chunk is stored with its page range, so a quote from a PDF
     // resolves to the exact page it appeared on.
-    const pdfNotes: string[] = [];
-    for (const pdf of (submission.pdfDocuments ?? []).slice(0, MAX_PDF_TRANSCRIPTIONS)) {
+    for (const pdf of uploaded.pdfs.slice(0, MAX_PDF_TRANSCRIPTIONS)) {
       try {
         const transcription = await transcribePdf(provider, pdf, (storageId) =>
-          ctx.storage.getUrl(storageId as unknown as Id<"_storage">),
+          ctx.storage.get(storageId as unknown as Id<"_storage">),
         );
         if (transcription.text.trim()) {
           documents.push({
@@ -341,6 +329,10 @@ export const generate = action({
     // The hashed input covers exactly what the model will see, in order.
     const sourceText = documents.map((d) => d.text).join("\n\n");
 
+    // Documents are labelled so the model can name the document a quote came
+    // from, and so it never implies it read a material that is not here.
+    const corpusBlocks = renderCorpusBlocks(documents);
+
     const criterionLines = criteria
       .map((c) => `- "${c.name}": ${c.description}`)
       .join("\n");
@@ -348,10 +340,10 @@ export const generate = action({
     const userPrompt = `JUDGING CRITERIA (use these EXACT names as the \`criterion\` value of each \`criteria\` entry):
 ${criterionLines}
 
-SUBMISSION TEXT (this is the ONLY source of information you have; attached documents are listed by name only and their contents were NOT provided):
-<submission>
-${sourceText}
-</submission>
+EVIDENCE CORPUS (these documents are your ONLY source of information; quote verbatim from them and nothing else):
+${corpusBlocks}
+
+If a document is listed in the submission's attached-documents list but has no block above, its contents were not readable — do not claim to have read it.
 
 Produce the brief and one \`criteria\` entry for EVERY criterion listed above.`;
 
@@ -436,6 +428,120 @@ Produce the brief and one \`criteria\` entry for EVERY criterion listed above.`;
     });
 
     return { ok: true, droppedUnverified };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Evidence preview (what the corpus will contain, before any generation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lists the materials the copilot will read for this submission, without
+ * calling the AI vendor at all.
+ *
+ * Two reasons this exists. For the judge: the evidence corpus should be
+ * visible BEFORE trusting a generated analysis, not after. For the product:
+ * "the AI read the team's documents" is a claim that has to be checkable, and
+ * this makes it checkable independently of the model.
+ *
+ * PDFs are listed as pending because their text only exists once the provider
+ * has transcribed them at generation time.
+ */
+export const evidencePreview = action({
+  args: { teamId: v.id("teams") },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<
+    | {
+        ok: true;
+        documents: {
+          sourceId: string;
+          source: string;
+          chars: number;
+          pages?: number;
+          pending?: boolean;
+        }[];
+        notes: string[];
+      }
+    | { ok: false; error: string }
+  > => {
+    const auth = await actionUser(ctx);
+    if (!auth.ok) return { ok: false, error: auth.error };
+
+    const hackathon = await ctx.runQuery(
+      internal.lib.actionAuth.currentHackathonMeta,
+      {},
+    );
+    if (!hackathon) {
+      return { ok: false, error: "No hackathon is currently active." };
+    }
+
+    const accessError = await judgeAccess(ctx, auth.user, args.teamId);
+    if (accessError) return { ok: false, error: accessError };
+
+    const submission = await ctx.runQuery(internal.copilot.submissionSource, {
+      teamId: args.teamId,
+    });
+    if (!submission) {
+      return { ok: false, error: "This team has no submission to read yet." };
+    }
+
+    const uploaded = await collectUploadedMaterials(
+      submission.uploadedFiles,
+      (storageId) => ctx.storage.get(storageId as unknown as Id<"_storage">),
+    );
+
+    const formText = buildSourceText(
+      {
+        projectName: submission.projectName,
+        techStack: submission.techStack,
+        problemStatement: submission.problemStatement,
+        solutionDescription: submission.solutionDescription,
+        targetUsers: submission.targetUsers,
+        keyFeatures: submission.keyFeatures,
+        innovation: submission.innovation,
+        expectedImpact: submission.expectedImpact,
+        implementationDetails: submission.implementationDetails,
+        futureScope: submission.futureScope,
+        abstract: submission.abstract,
+        documentNames: submission.documentNames,
+      },
+      hackathon.blindJudging,
+    ).slice(0, MAX_SOURCE_CHARS);
+
+    const built = buildCorpusDocuments({
+      formText,
+      githubReadme: submission.githubReadme,
+      githubSummary: submission.githubSummary,
+      uploadedTexts: uploaded.texts,
+      maxDocChars: MAX_DOC_CHARS,
+    });
+
+    const documents: {
+      sourceId: string;
+      source: string;
+      chars: number;
+      pages?: number;
+      pending?: boolean;
+    }[] = built.documents.map((d) => ({
+      sourceId: d.sourceId,
+      source: d.source,
+      chars: d.text.length,
+    }));
+
+    // A PDF is part of the corpus, but only once transcribed; say so rather
+    // than showing a zero-length document as if it were empty.
+    for (const pdf of uploaded.pdfs) {
+      documents.push({
+        sourceId: `pdf:${pdf.fileName}`,
+        source: `Uploaded document (PDF) — ${pdf.fileName}`,
+        chars: 0,
+        pending: true,
+      });
+    }
+
+    return { ok: true, documents, notes: built.notes };
   },
 });
 
@@ -531,14 +637,13 @@ export const chat = action({
       .map((m) => ({ role: m.role, text: m.text.slice(0, 4000) }));
 
     try {
+      // The corpus goes in the user turn, not the system prompt: it is data,
+      // and keeping the instruction block clean keeps the rules authoritative.
+      const corpusBlocks = renderCorpusBlocks(corpus.documents);
+
       const result = await provider.generateStructured({
-        system: `${CHAT_SYSTEM_PROMPT}\n\nEVIDENCE CORPUS (the ONLY source of information you have; each document is labeled with its source):\n${corpus.documents
-          .map(
-            (d, i) =>
-              `<document source="${d.source}">\n${corpus.normalized[i] ? d.text : d.text}\n</document>`,
-          )
-          .join("\n")}`,
-        prompt: question,
+        system: CHAT_SYSTEM_PROMPT,
+        prompt: `EVIDENCE CORPUS (the ONLY source of information you have; each document is labeled with its source):\n${corpusBlocks}\n\nJUDGE'S QUESTION:\n${question}`,
         schema: CHAT_SCHEMA as unknown as Record<string, unknown>,
         schemaName: "judge_chat_answer",
         schemaDescription: "A grounded answer about one hackathon submission.",
@@ -604,28 +709,16 @@ export const submissionSource = internalQuery({
         .collect(),
     ]);
 
-    const uploadedTexts: { fileName: string; text: string | null }[] = [];
-    const pdfDocuments: { fileName: string; storageId: string }[] = [];
-    for (const file of files) {
-      if (file.contentType === "application/pdf") {
-        pdfDocuments.push({ fileName: file.fileName, storageId: file.storageId });
-      } else if (
-        /^text\//.test(file.contentType) ||
-        /json|markdown|csv|xml|yaml/i.test(file.contentType)
-      ) {
-        const blob = await ctx.storage.getUrl(file.storageId as unknown as Id<"_storage">);
-        let text: string | null = null;
-        try {
-          const response = await fetch(blob);
-          if (response.ok && (await response.arrayBuffer()).byteLength <= 2_000_000) {
-            text = await response.text();
-          }
-        } catch {
-          text = null;
-        }
-        uploadedTexts.push({ fileName: file.fileName, text });
-      }
-    }
+    // File CONTENTS are not read here: Convex queries may not perform network
+    // I/O, and reading a stored file means fetching it. The action that calls
+    // this does the reading via `collectUploadedMaterials`.
+    const uploadedFiles = files
+      .slice(0, MAX_FILES_IN_CORPUS)
+      .map((f) => ({
+        fileName: f.fileName,
+        contentType: f.contentType,
+        storageId: f.storageId,
+      }));
 
     const repoAnalysis = await ctx.db
       .query("repoAnalyses")
@@ -666,8 +759,7 @@ export const submissionSource = internalQuery({
         ? { text: repoAnalysis.readmeExcerpt }
         : null,
       githubSummary,
-      uploadedTexts,
-      pdfDocuments,
+      uploadedFiles,
     };
   },
 });

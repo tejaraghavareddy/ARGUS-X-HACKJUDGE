@@ -1,4 +1,6 @@
-import { mutation } from "./_generated/server";
+import { action, internalMutation, internalQuery, mutation } from "./_generated/server";
+import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { hashSecret } from "./lib/password";
 
@@ -407,6 +409,130 @@ function makeRandom(seed: number) {
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 const now = Date.now();
+
+// ---------------------------------------------------------------------------
+// Seeded submission materials
+// ---------------------------------------------------------------------------
+// The Judge Copilot builds its evidence corpus from what a team actually
+// uploaded, so the demo data needs real attached documents — otherwise the
+// multi-document corpus is untestable by hand. A text document and a genuine
+// (small, uncompressed) PDF are stored in Convex file storage exactly as a
+// participant upload would be.
+
+/**
+ * Build a minimal, valid, uncompressed PDF with one text block per page.
+ * Enough for real extraction (Gemini's document path included) without
+ * pulling a PDF library into the seed.
+ */
+function buildSimplePdf(pages: string[][]): Uint8Array {
+  const objects: string[] = [];
+  const pageCount = pages.length;
+  // 1 catalog, 2 pages tree, 3 font, then per page: page object + content.
+  const firstPageObj = 4;
+  const kids = pages
+    .map((_, i) => `${firstPageObj + i * 2} 0 R`)
+    .join(" ");
+
+  objects.push("<< /Type /Catalog /Pages 2 0 R >>");
+  objects.push(`<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>`);
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+
+  const escapePdfText = (line: string) =>
+    line.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+
+  pages.forEach((lines, index) => {
+    const body = [
+      "BT",
+      "/F1 12 Tf",
+      "14 TL",
+      "60 720 Td",
+      ...lines.map((line) => `(${escapePdfText(line.slice(0, 95))}) Tj T*`),
+      "ET",
+    ].join("\n");
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ` +
+        `/Resources << /Font << /F1 3 0 R >> >> /Contents ${
+          firstPageObj + index * 2 + 1
+        } 0 R >>`,
+    );
+    objects.push(`<< /Length ${body.length} >>\nstream\n${body}\nendstream`);
+  });
+
+  // Assemble with a real xref table so strict readers accept the file.
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  objects.forEach((body, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xrefStart = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf +=
+    `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n` +
+    `startxref\n${xrefStart}\n%%EOF\n`;
+
+  const bytes = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i += 1) bytes[i] = pdf.charCodeAt(i) & 0xff;
+  return bytes;
+}
+
+/** Supporting documents attached to the demo team's seeded submission. */
+const SEED_DOCUMENTS: {
+  kind: "documentation" | "presentation";
+  fileName: string;
+  contentType: string;
+  text?: string;
+  pages?: string[][];
+}[] = [
+  {
+    kind: "documentation",
+    fileName: "nebula-care-architecture.md",
+    contentType: "text/markdown",
+    text: [
+      "# Nebula Care — architecture notes",
+      "",
+      "## Offline sync",
+      "Follow-up records are written to a local SQLite store first and reconciled",
+      "when a clinic regains connectivity. Conflicts are resolved last-write-wins",
+      "per field, because clinic staff edit one patient record at a time.",
+      "",
+      "## Data model",
+      "Patient records are stored in PostgreSQL through Prisma, keyed by clinic id.",
+      "Every row carries the clinic that wrote it, so a merge can be audited.",
+      "",
+      "## Testing",
+      "Unit tests run on Vitest, end-to-end flows run on Playwright against a",
+      "throwaway Postgres instance. No performance or load testing has been done.",
+    ].join("\n"),
+  },
+  {
+    kind: "presentation",
+    fileName: "nebula-care-deck.pdf",
+    contentType: "application/pdf",
+    pages: [
+      [
+        "Nebula Care - page 1 of 3",
+        "The problem: rural clinics track follow-up visits on paper.",
+        "Paper lists are lost between the consulting room and the dispensary.",
+      ],
+      [
+        "Nebula Care - page 2 of 3",
+        "The solution: an offline-first follow-up app built with React Native.",
+        "Clinicians record a visit with no connection; the app syncs later.",
+        "Patient records are stored in PostgreSQL, keyed by clinic.",
+      ],
+      [
+        "Nebula Care - page 3 of 3",
+        "Where we are: a working end-to-end path on demo data only.",
+        "We have not run a clinical trial and have no production deployments.",
+        "Next: offline mode for tablets, and a public API.",
+      ],
+    ],
+  },
+];
 
 export const seed = mutation({
   args: {},
@@ -984,6 +1110,137 @@ export const seed = mutation({
       auditEntries: auditEntries.length,
       unassignedTeams: TEAMS.length - assignableTeamCount,
       participantSample: participantLogins.slice(0, 3),
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Attached submission materials
+// ---------------------------------------------------------------------------
+// Writing to Convex file storage is action-only (`ctx.storage.store`), so the
+// uploaded documents the Judge Copilot reads are seeded by a separate action
+// that runs straight after `seed`. Keeping it separate also keeps the seeding
+// of a team's demo submission a deliberate, re-runnable step: a real team's
+// files are theirs, not ours to invent.
+
+/** The demo submission that receives the seeded materials. */
+export const materialsTarget = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const hackathon = await ctx.db
+      .query("hackathons")
+      .withIndex("by_slug", (q) => q.eq("slug", HACKATHON_SLUG))
+      .unique();
+    if (!hackathon) return null;
+
+    const submissions = await ctx.db
+      .query("submissions")
+      .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
+      .collect();
+    const submission = submissions.find((s) => s.status === "submitted");
+    if (!submission) return null;
+
+    const lead = await ctx.db
+      .query("teamMembers")
+      .withIndex("by_team", (q) => q.eq("teamId", submission.teamId))
+      .collect();
+    const leadUser = lead.find((m) => m.isLead)?.userId ?? lead[0]?.userId;
+    if (!leadUser) return null;
+
+    return {
+      hackathonId: hackathon._id,
+      teamId: submission.teamId,
+      submissionId: submission._id,
+      userId: leadUser,
+    };
+  },
+});
+
+/** Replace (never accumulate) the seeded materials on one submission. */
+export const replaceMaterials = internalMutation({
+  args: {
+    hackathonId: v.id("hackathons"),
+    teamId: v.id("teams"),
+    submissionId: v.id("submissions"),
+    userId: v.id("users"),
+    files: v.array(
+      v.object({
+        kind: v.string(),
+        fileName: v.string(),
+        contentType: v.string(),
+        storageId: v.string(),
+        size: v.number(),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    for (const existing of await ctx.db
+      .query("submissionFiles")
+      .withIndex("by_submission", (q) => q.eq("submissionId", args.submissionId))
+      .collect()) {
+      await ctx.db.delete(existing._id);
+    }
+    for (const file of args.files) {
+      await ctx.db.insert("submissionFiles", {
+        hackathonId: args.hackathonId,
+        teamId: args.teamId,
+        submissionId: args.submissionId,
+        kind: file.kind,
+        fileName: file.fileName,
+        contentType: file.contentType,
+        size: file.size,
+        storageId: file.storageId,
+        uploadedBy: args.userId,
+        uploadedAt: now - 3 * DAY,
+      });
+    }
+    return args.files.length;
+  },
+});
+
+/**
+ * Attach the demo team's documentation and pitch deck to their submission.
+ * Run after `seed:seed`:
+ *   bunx convex run seed:seed && bunx convex run seed:seedMaterials
+ */
+export const seedMaterials = action({
+  args: {},
+  handler: async (ctx): Promise<{ files: string[]; total: number }> => {
+    const target = await ctx.runQuery(internal.seed.materialsTarget, {});
+    if (!target) {
+      return {
+        files: [],
+        total: 0,
+      };
+    }
+
+    const files: {
+      kind: string;
+      fileName: string;
+      contentType: string;
+      storageId: string;
+      size: number;
+    }[] = [];
+    for (const doc of SEED_DOCUMENTS) {
+      const bytes = doc.pages
+        ? buildSimplePdf(doc.pages)
+        : new TextEncoder().encode(doc.text ?? "");
+      const storageId = await ctx.storage.store(
+        new Blob([bytes as BlobPart], { type: doc.contentType }),
+      );
+      files.push({
+        kind: doc.kind,
+        fileName: doc.fileName,
+        contentType: doc.contentType,
+        storageId,
+        size: bytes.byteLength,
+      });
+    }
+
+    await ctx.runMutation(internal.seed.replaceMaterials, { ...target, files });
+    return {
+      files: files.map((f) => f.fileName),
+      total: files.length,
     };
   },
 });

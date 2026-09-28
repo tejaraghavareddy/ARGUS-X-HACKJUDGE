@@ -516,12 +516,20 @@ export default function JudgeReview() {
               : "Score every criterion. Drafts are private to you."
           }
           actions={
-            isLocked ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-success-soft px-2 py-0.5 text-[0.6875rem] font-semibold text-success-foreground">
-                <Lock className="size-3" />
-                Locked
+            <span className="flex items-center gap-1.5">
+              {/* The third tier, stated on the surface where it happens: the
+                  AI can read the submission and suggest what to check, but
+                  the number that counts is written here and nowhere else. */}
+              <span className="rounded-full bg-secondary px-2 py-0.5 text-[0.6875rem] font-semibold text-secondary-foreground">
+                Human assessment
               </span>
-            ) : null
+              {isLocked ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-success-soft px-2 py-0.5 text-[0.6875rem] font-semibold text-success-foreground">
+                  <Lock className="size-3" />
+                  Locked
+                </span>
+              ) : null}
+            </span>
           }
         >
           {!isLocked && !allScored && (

@@ -91,7 +91,7 @@ export type SourcesUsed = {
   source: string;
   chars: number;
   pages?: number;
-}[];
+};
 
 // ---------------------------------------------------------------------------
 // Provider identity
@@ -129,12 +129,12 @@ export const CHAT_SCHEMA = {
     answer: {
       type: "string",
       description:
-        "Direct, neutral reply to the judge's question, using only the submission text. No scores, no verdicts.",
+        "Direct, neutral reply to the judge's question, using only the evidence corpus. No scores, no verdicts.",
     },
     quotes: {
       type: "array",
       description:
-        "Verbatim spans copied exactly from the submission text that support the answer. Empty if notInSource is true.",
+        "Verbatim spans copied exactly from a document of the evidence corpus that support the answer. Empty if notInSource is true.",
       items: { type: "string" },
       maxItems: 5,
     },
@@ -149,15 +149,15 @@ export const CHAT_SCHEMA = {
 
 export const CHAT_SYSTEM_PROMPT = `You are an analysis assistant supporting a human judge at a hackathon, answering questions about ONE submission.
 
-You answer from the provided evidence corpus only. You do NOT judge.
+You answer from the provided evidence corpus only. You do NOT judge. The corpus is a set of labelled documents wrapped in <document source="..."> tags: the submission form, the GitHub README, the repository analysis, and any uploaded documents. Nothing beyond those documents is available to you.
 
 ABSOLUTE RULES
 1. Never assign, suggest, imply or predict a score, grade, rank or winner.
 2. Never introduce a fact that is not in the evidence corpus. You have not opened anything beyond the documents provided.
 3. Every factual statement about the submission must be backed by a verbatim span in \`quotes\`, copied character-for-character (ignoring only line wrapping) from the corpus. If you cannot quote it, do not assert it.
-4. If the corpus does not contain the answer, set \`notInSource\` to true, say so plainly in \`answer\`, and return an empty \`quotes\` array. Never guess.
+4. If the corpus does not contain the answer, set \`notInSource\` to true, say exactly \`${NO_EVIDENCE}\` in \`answer\` (and say plainly which part is missing), and return an empty \`quotes\` array. Never guess, and never answer from general knowledge of the technologies involved.
 5. Describe; do not evaluate. State what the evidence says, not whether it is good.
-6. Distinguish what the materials state from your own reading of them. When you interpret ("this implies…", "this suggests…"), say so explicitly and do not attach a quote to the interpretation itself.
+6. Distinguish what the materials state from your own reading of them. When you interpret ("this implies…", "this suggests…"), say so explicitly as interpretation and do not attach a quote to the interpretation itself. The source document and page for each quote are resolved automatically from the quote text.
 
 Write in plain, neutral language. Prefer the materials' own terminology over paraphrase.`;;
 
@@ -222,13 +222,17 @@ export function resolveSource(
     const doc = corpus.documents[i];
     let page: number | undefined;
     if (doc.pages && doc.pages.length > 0) {
-      // Character-level position in the ORIGINAL text maps to a page range.
-      const original = doc.text;
-      const probe = normalizeForGrounding(quote).slice(0, 40);
-      const idx = original.toLowerCase().indexOf(probe.toLowerCase());
-      const at = idx >= 0 ? idx : 0;
-      const match = doc.pages.find((p) => at >= p.start && at <= p.end);
-      page = match?.page;
+      // Page attribution is done by normalizing each page range on its own
+      // and testing containment, rather than by mapping a character index
+      // across the whole document: normalization changes string length, so a
+      // flattened index would drift and misattribute the page.
+      for (const range of doc.pages) {
+        const slice = doc.text.slice(range.start, range.end + 1);
+        if (slice && normalizeForGrounding(slice).includes(normalized)) {
+          page = range.page;
+          break;
+        }
+      }
     }
     return {
       sourceId: doc.sourceId,
@@ -445,12 +449,11 @@ export function buildSourceText(input: SourceInput, blind: boolean): string {
     parts.push(`Technology stack:\n${input.techStack.join(", ")}`);
   }
   if (input.documentNames.length > 0) {
-    // Only the NAMES of attached documents. The copilot reads the submission
-    // text, not the files, and must never imply it opened them.
+    // The NAMES of attached documents. Readable files are added to the corpus
+    // as their own labelled documents, so this list must never imply that a
+    // document was read when no block for it exists.
     parts.push(
-      `Attached documents (names only — contents were not provided):\n${input.documentNames
-        .map((d) => `- ${d}`)
-        .join("\n")}`,
+      `Attached documents:\n${input.documentNames.map((d) => `- ${d}`).join("\n")}`,
     );
   }
   if (blind) {
@@ -473,6 +476,144 @@ export function hashSource(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Corpus assembly
+// ---------------------------------------------------------------------------
+
+/** A file a team attached, as the database knows it (no contents). */
+export type UploadedFileRef = {
+  fileName: string;
+  contentType: string;
+  storageId: string;
+};
+
+/** Ceiling on an uploaded text file the copilot will read inline (2 MB). */
+const MAX_UPLOADED_TEXT_BYTES = 2_000_000;
+
+/**
+ * Read the uploaded materials the copilot can use: text files inline, PDFs
+ * left for the provider's page-aware transcription path.
+ *
+ * This runs in an ACTION, not a query, because Convex queries may not perform
+ * network I/O — a file's text simply cannot be fetched from a query. The
+ * caller supplies the storage reader (`ctx.storage.get`), so the same function
+ * serves the generation action and the evidence preview.
+ */
+export async function collectUploadedMaterials(
+  files: UploadedFileRef[],
+  readBlob: (storageId: string) => Promise<Blob | null>,
+): Promise<{
+  texts: { fileName: string; text: string | null }[];
+  pdfs: { fileName: string; storageId: string }[];
+}> {
+  const texts: { fileName: string; text: string | null }[] = [];
+  const pdfs: { fileName: string; storageId: string }[] = [];
+
+  for (const file of files) {
+    if (file.contentType === "application/pdf") {
+      pdfs.push({ fileName: file.fileName, storageId: file.storageId });
+      continue;
+    }
+    if (
+      !/^text\//.test(file.contentType) &&
+      !/json|markdown|csv|xml|yaml/i.test(file.contentType)
+    ) {
+      // Binary formats the copilot has no way to read are not corpus: saying
+      // so is better than silently pretending they were read.
+      texts.push({ fileName: file.fileName, text: null });
+      continue;
+    }
+
+    let text: string | null = null;
+    try {
+      const blob = await readBlob(file.storageId);
+      if (blob && blob.size <= MAX_UPLOADED_TEXT_BYTES) {
+        text = await blob.text();
+      }
+    } catch {
+      text = null;
+    }
+    texts.push({ fileName: file.fileName, text });
+  }
+
+  return { texts, pdfs };
+}
+
+/** Everything the corpus is built from, before any PDF transcription. */
+export type CorpusMaterials = {
+  /** The structured submission form, already rendered to text. */
+  formText: string;
+  /** README text captured by the GitHub analyzer, when one has been run. */
+  githubReadme?: { text: string } | null;
+  /** Deterministic report from the GitHub analyzer, when one exists. */
+  githubSummary?: string | null;
+  /** Text of each readable uploaded file (null when it could not be read). */
+  uploadedTexts?: { fileName: string; text: string | null }[];
+  /** Per-document character ceiling. */
+  maxDocChars: number;
+};
+
+/**
+ * Build the non-PDF part of the evidence corpus. Order is fixed and
+ * meaningful: the submission form comes first, so when a phrase appears in
+ * more than one document the submission itself is named as the source.
+ *
+ * Shared by generation and by the pre-generation preview, so what a judge is
+ * shown is exactly what the model will be given.
+ */
+export function buildCorpusDocuments(materials: CorpusMaterials): {
+  documents: SourceDocument[];
+  notes: string[];
+} {
+  const { maxDocChars } = materials;
+  const documents: SourceDocument[] = [];
+  const notes: string[] = [];
+
+  if (materials.formText.trim()) {
+    documents.push({
+      sourceId: "form",
+      source: "Project documentation",
+      text: materials.formText,
+    });
+  }
+  if (materials.githubReadme?.text) {
+    documents.push({
+      sourceId: "github-readme",
+      source: "README (GitHub)",
+      text: materials.githubReadme.text.slice(0, maxDocChars),
+    });
+  }
+  if (materials.githubSummary) {
+    documents.push({
+      sourceId: "github-analysis",
+      source: "GitHub repository analysis",
+      text: materials.githubSummary.slice(0, maxDocChars),
+    });
+  }
+  for (const file of materials.uploadedTexts ?? []) {
+    if (!file.text?.trim()) {
+      notes.push(
+        `${file.fileName} is attached but its text could not be read, so it is not part of the evidence`,
+      );
+      continue;
+    }
+    documents.push({
+      sourceId: `file:${file.fileName}`,
+      source: `Uploaded document — ${file.fileName}`,
+      text: file.text.slice(0, maxDocChars),
+    });
+  }
+
+  return { documents, notes };
+}
+
+/** Render corpus documents as labelled blocks for the model's user turn. */
+export function renderCorpusBlocks(documents: SourceDocument[]): string {
+  return documents
+    .map((d) => `<document source="${d.source}">\n${d.text}\n</document>`)
+    .join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
 // Model contract (Gemini responseSchema)
 // ---------------------------------------------------------------------------
 
@@ -490,7 +631,7 @@ const claimList = (description: string) => ({
       sourceQuote: {
         type: "string",
         description:
-          "A VERBATIM span copied exactly from the submission text that supports this claim. Must appear character-for-character (ignoring only line wrapping) in the submission. If you cannot quote a span, do not include the claim.",
+          "A VERBATIM span copied exactly from one document of the evidence corpus that supports this claim. Must appear character-for-character (ignoring only line wrapping) in that document. If you cannot quote a span, do not include the claim.",
       },
     },
     required: ["claim", "sourceQuote"],
@@ -727,12 +868,15 @@ export const SYSTEM_PROMPT = `You are an analysis assistant supporting human jud
 
 You produce evidence and summaries. You do NOT judge.
 
+You work ONLY from the EVIDENCE CORPUS supplied in the user message: a set of labelled documents (the submission form, the GitHub README, the repository analysis, and any uploaded documents the team provided). Each document is wrapped in <document source="..."> tags; the source label is the document's origin. Nothing outside those documents is available to you, and a document that has no block was not readable.
+
 ABSOLUTE RULES
 1. Never assign, suggest, imply or predict a score, grade, rank or winner. Not in any field, not in any wording.
-2. Never say a submission is "the best", "should win", "deserves" a score, or that it is "strong" or "weak" in a grading sense. Describe what the text says; let the human decide what it means.
-3. Never introduce a fact that is not in the submission text. You do not know anything about these projects beyond that text, and you have not opened any attached files — only their names are given to you.
-4. Every claim you make about the submission must carry a verbatim \`sourceQuote\` copied from the text. If you cannot quote a span that supports the claim, leave the claim out. An empty list is always an acceptable answer; a guess never is.
+2. Never say a submission is "the best", "should win", "deserves" a score, or that it is "strong" or "weak" in a grading sense. Describe what the evidence says; let the human decide what it means.
+3. Never introduce a fact that is not in the evidence corpus.
+4. Every claim you make about the submission must carry a verbatim \`sourceQuote\` copied from whichever corpus document supports it. If you cannot quote a span that supports the claim, leave the claim out. An empty list is always an acceptable answer; a guess never is. (The source document and page are resolved from your quote automatically — you do not need to state them, but never quote a document you were not shown.)
 5. Phrase \`concerns\` and \`missingEvidence\` as things a human should verify, not as conclusions.
-6. If a field has no basis in the text, return an empty array or an empty string. Do not pad.
+6. If a field has no basis in the corpus, return the exact string \`${NO_EVIDENCE}\` for text fields, or an empty array for list fields. Do not pad, and do not substitute general knowledge about the technology involved.
+7. Keep three things separate in your wording: what the submission EVIDENCE states, what you are INTERPRETING from it, and what a human judge might still need to check. Never present an interpretation as a quoted fact.
 
 Write in plain, neutral language. Prefer the team's own terminology over paraphrase.`;

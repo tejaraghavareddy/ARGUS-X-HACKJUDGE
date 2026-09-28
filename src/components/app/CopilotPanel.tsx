@@ -3,6 +3,7 @@ import { useAction, useQuery } from "convex/react";
 import {
   AlertTriangle,
   Bot,
+  Library,
   Quote,
   RefreshCw,
   Send,
@@ -77,15 +78,47 @@ export function CopilotPanel({ teamId }: { teamId: Id<"teams"> }) {
   // so they are wired with useAction, not useMutation.
   const generate = useAction(api.copilot.generate);
   const sendChat = useAction(api.copilot.chat);
+  const loadEvidence = useAction(api.copilot.evidencePreview);
 
   const [generating, setGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
   const [messages, setMessages] = useState<ChatEntry[]>([]);
+  // The corpus the copilot reads, fetched before any generation so a judge
+  // can see what "the evidence" is before trusting an analysis of it.
+  const [evidence, setEvidence] = useState<
+    | {
+        documents: {
+          sourceId: string;
+          source: string;
+          chars: number;
+          pages?: number;
+          pending?: boolean;
+        }[];
+        notes: string[];
+      }
+    | null
+  >(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const criteriaNames = Object.keys(brief?.criteria ?? {}).sort();
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadEvidence({ teamId })
+      .then((result) => {
+        if (cancelled || !result.ok) return;
+        setEvidence({ documents: result.documents, notes: result.notes });
+      })
+      .catch(() => {
+        /* A missing preview is not worth interrupting the judge over. */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teamId]);
 
   // Keep the selected criterion tab pointing at a criterion that exists.
   useEffect(() => {
@@ -196,49 +229,73 @@ export function CopilotPanel({ teamId }: { teamId: Id<"teams"> }) {
           <span>
             Machine-generated briefing and evidence for this submission. It
             carries no score and cannot change one — the scorecard is entirely
-            yours. Every claim is checked verbatim against the submitted text;
-            anything that does not verify is dropped before you see it.
+            yours. Every claim is checked verbatim against the submitted
+            materials; anything that does not verify is dropped before you see
+            it.
           </span>
         </p>
 
+        <TierLegend />
+
         {brief.state === "missing" && (
-          <div className="surface-inset mt-4 p-4 text-center">
-            <p className="text-sm text-muted-foreground">
-              No AI analysis has been generated for this submission yet.
-            </p>
-            <Button
-              onClick={() => void handleGenerate()}
-              disabled={generating}
-              className="mt-3"
-            >
-              <Sparkles />
-              {generating ? "Generating…" : "Generate analysis"}
-            </Button>
-            <p className="mt-2 text-[0.6875rem] text-muted-foreground">
-              Runs server-side against the submission text and the live rubric.
-            </p>
-          </div>
+          <>
+            {evidence && evidence.documents.length > 0 && (
+              <div className="mt-4">
+                <SourcesUsedRow
+                  sources={evidence.documents}
+                  notes={evidence.notes}
+                />
+              </div>
+            )}
+            <div className="surface-inset mt-4 p-4 text-center">
+              <p className="text-sm text-muted-foreground">
+                No AI analysis has been generated for this submission yet.
+              </p>
+              <Button
+                onClick={() => void handleGenerate()}
+                disabled={generating}
+                className="mt-3"
+              >
+                <Sparkles />
+                {generating ? "Generating…" : "Generate analysis"}
+              </Button>
+              <p className="mt-2 text-[0.6875rem] text-muted-foreground">
+                Runs server-side against the materials listed above and the live
+                rubric.
+              </p>
+            </div>
+          </>
         )}
 
         {brief.state === "failed" && (
-          <div className="mt-4 rounded-md border border-destructive/30 bg-destructive-soft px-3 py-2.5">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-destructive-foreground">
-              <AlertTriangle className="size-3.5" />
-              The last generation attempt failed
-            </p>
-            <p className="mt-1.5 text-xs leading-relaxed text-destructive-foreground/90">
-              {brief.error}
-            </p>
-            <Button
-              variant="outline"
-              className="mt-3"
-              onClick={() => void handleGenerate()}
-              disabled={generating}
-            >
-              <RefreshCw />
-              {generating ? "Retrying…" : "Retry generation"}
-            </Button>
-          </div>
+          <>
+            {evidence && evidence.documents.length > 0 && (
+              <div className="mt-4">
+                <SourcesUsedRow
+                  sources={evidence.documents}
+                  notes={evidence.notes}
+                />
+              </div>
+            )}
+            <div className="mt-4 rounded-md border border-destructive/30 bg-destructive-soft px-3 py-2.5">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-destructive-foreground">
+                <AlertTriangle className="size-3.5" />
+                The last generation attempt failed
+              </p>
+              <p className="mt-1.5 text-xs leading-relaxed text-destructive-foreground/90">
+                {brief.error}
+              </p>
+              <Button
+                variant="outline"
+                className="mt-3"
+                onClick={() => void handleGenerate()}
+                disabled={generating}
+              >
+                <RefreshCw />
+                {generating ? "Retrying…" : "Retry generation"}
+              </Button>
+            </div>
+          </>
         )}
 
         {brief.state === "ready" && brief.brief && (
@@ -258,17 +315,31 @@ export function CopilotPanel({ teamId }: { teamId: Id<"teams"> }) {
               )}
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <BriefBlock
-                title="Executive summary"
-                text={brief.brief.executiveSummary}
-              />
-              <BriefBlock title="Problem" text={brief.brief.problemSummary} />
-              <BriefBlock title="Solution" text={brief.brief.solution} />
-              <BriefBlock
-                title="Architecture"
-                text={brief.brief.architectureSummary}
-              />
+            <SourcesUsedRow
+              sources={brief.sources}
+              notes={brief.corpusNotes}
+            />
+
+            <div>
+              <p className="flex flex-wrap items-baseline gap-x-2 text-xs font-semibold">
+                <span className="text-info-foreground">AI interpretation</span>
+                <span className="font-normal text-muted-foreground">
+                  the model&apos;s reading of the materials above — describe, not
+                  a verdict
+                </span>
+              </p>
+              <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                <BriefBlock
+                  title="Executive summary"
+                  text={brief.brief.executiveSummary}
+                />
+                <BriefBlock title="Problem" text={brief.brief.problemSummary} />
+                <BriefBlock title="Solution" text={brief.brief.solution} />
+                <BriefBlock
+                  title="Architecture"
+                  text={brief.brief.architectureSummary}
+                />
+              </div>
             </div>
 
             {brief.brief.missingInformation.length > 0 && (
@@ -296,7 +367,12 @@ export function CopilotPanel({ teamId }: { teamId: Id<"teams"> }) {
             )}
 
             <div>
-              <p className="text-xs font-semibold">Rubric evidence by criterion</p>
+              <p className="text-xs font-semibold">
+                <span className="text-success-foreground">Submission evidence</span>{" "}
+                <span className="font-normal text-muted-foreground">
+                  by criterion — each claim quoted from the materials
+                </span>
+              </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {criteriaNames.map((name) => (
                   <button
@@ -396,8 +472,9 @@ export function CopilotPanel({ teamId }: { teamId: Id<"teams"> }) {
           <div ref={scrollRef} className="max-h-72 overflow-y-auto p-3">
             {messages.length === 0 && !chatBusy && (
               <p className="text-xs text-muted-foreground">
-                Answers come only from the submission text, with verbatim
-                quotes. Try “What does the team say about testing?”
+                Answers come only from the materials listed above, with verbatim
+                quotes and the document each one came from. If the submission
+                does not say, the copilot says {NO_EVIDENCE}
               </p>
             )}
             {messages.map((m, i) => (
@@ -435,7 +512,7 @@ export function CopilotPanel({ teamId }: { teamId: Id<"teams"> }) {
                   )}
                   {m.notInSource && (
                     <p className="mt-1.5 text-[0.6875rem] font-medium text-warning-foreground">
-                      Not stated in the submission.
+                      Not stated in the submission. {NO_EVIDENCE}
                     </p>
                   )}
                   {m.dropped ? (
@@ -500,23 +577,122 @@ function ClaimList({
   claims,
 }: {
   title: string;
-  claims: { claim: string; sourceQuote: string }[];
+  claims: {
+    claim: string;
+    sourceQuote: string;
+    source?: { sourceId: string; source: string; page?: number };
+  }[];
 }) {
   if (claims.length === 0) return null;
   return (
     <div className="mb-3 last:mb-0">
       <p className="text-xs font-semibold">{title}</p>
       <ul className="mt-1.5 space-y-1.5">
-        {claims.map((c) => (
-          <li key={c.claim} className="rounded-md bg-muted px-2.5 py-1.5">
-            <p className="text-xs leading-relaxed">{c.claim}</p>
-            <p className="mt-1 flex gap-1.5 text-[0.6875rem] leading-relaxed text-muted-foreground">
-              <Quote className="mt-px size-3 shrink-0" />
-              <span>“{c.sourceQuote}”</span>
-            </p>
-          </li>
-        ))}
+        {claims.map((c, i) => {
+          const isEvidence = c.sourceQuote !== NO_EVIDENCE;
+          return (
+            <li
+              key={`${c.claim}-${i}`}
+              className="rounded-md bg-muted px-2.5 py-1.5"
+            >
+              <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                Claim
+              </p>
+              <p className="mt-0.5 text-xs leading-relaxed">{c.claim}</p>
+
+              <div className="mt-1.5 border-l-2 border-success/40 pl-2">
+                <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-success-foreground">
+                  Evidence
+                </p>
+                {isEvidence ? (
+                  <>
+                    <p className="mt-0.5 flex gap-1.5 text-[0.6875rem] leading-relaxed text-muted-foreground">
+                      <Quote className="mt-px size-3 shrink-0" />
+                      <span>“{c.sourceQuote}”</span>
+                    </p>
+                    {c.source ? (
+                      <p className="mt-1 flex flex-wrap items-center gap-1 text-[0.6875rem] text-muted-foreground">
+                        <span className="font-semibold">Source:</span>
+                        <SourceChip source={c.source} />
+                      </p>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="mt-0.5 text-[0.6875rem] font-medium text-warning-foreground">
+                    {NO_EVIDENCE}
+                  </p>
+                )}
+              </div>
+            </li>
+          );
+        })}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * Provenance strip: exactly which submission materials the AI read, how much
+ * of each, and any material it could not read. This is the judge's check that
+ * the "evidence" really came from the team's documents.
+ */
+function SourcesUsedRow({
+  sources,
+  notes,
+}: {
+  sources: {
+    sourceId: string;
+    source: string;
+    chars: number;
+    pages?: number;
+    pending?: boolean;
+  }[];
+  notes: string[];
+}) {
+  if (sources.length === 0 && notes.length === 0) return null;
+  return (
+    <div className="rounded-md border border-border bg-card p-3">
+      <p className="flex items-center gap-1.5 text-xs font-semibold">
+        <Library className="size-3.5" />
+        Submission evidence the AI read
+      </p>
+      {sources.length > 0 && (
+        <ul className="mt-1.5 flex flex-wrap gap-1.5">
+          {sources.map((s) => (
+            <li
+              key={s.sourceId}
+              className="inline-flex items-center gap-1.5 rounded border border-border bg-muted px-1.5 py-0.5 text-[0.6875rem]"
+            >
+              <span className="font-semibold">{s.source}</span>
+              {s.pending ? (
+                <span className="text-muted-foreground">
+                  read page by page at analysis time
+                </span>
+              ) : (
+                <span className="text-muted-foreground">
+                  {s.chars.toLocaleString()} chars
+                </span>
+              )}
+              {s.pages ? (
+                <span className="text-muted-foreground">{s.pages} pages</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      {notes.length > 0 && (
+        <ul className="mt-2 space-y-1 border-t border-border pt-2">
+          {notes.map((note) => (
+            <li
+              key={note}
+              className="flex gap-2 text-[0.6875rem] leading-relaxed text-warning-foreground"
+            >
+              <AlertTriangle className="mt-px size-3 shrink-0" />
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
