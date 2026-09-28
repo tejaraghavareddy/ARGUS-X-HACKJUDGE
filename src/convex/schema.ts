@@ -74,10 +74,48 @@ const aiReview = v.object({
   suggestedFocus: v.string(),
   model: v.string(),
   generatedAt: v.number(),
-  // criterion name -> the specific evidence that bears on that criterion.
-  // Optional because it is keyed by the rubric, which the admin can reshape at
-  // any time; a criterion with no evidence simply shows none.
-  evidence: v.optional(v.record(v.string(), v.array(v.string()))),
+});
+
+// ---------------------------------------------------------------------------
+// AI copilot output
+// ---------------------------------------------------------------------------
+
+/**
+ * A single claim the model made *about something the submission says*.
+ *
+ * It must be paired with `sourceQuote` — a verbatim span copied out of the
+ * submitted text. The server re-checks that quote against the submission and
+ * silently discards any claim it cannot find, which is what turns "do not
+ * invent facts" from a prompt instruction into something the database enforces.
+ */
+const groundedClaim = v.object({
+  claim: v.string(),
+  sourceQuote: v.string(),
+});
+
+const criterionAnalysis = v.object({
+  evidence: v.array(groundedClaim),
+  strengths: v.array(groundedClaim),
+  concerns: v.array(groundedClaim),
+  // Absences cannot be quoted, so these are ungrounded by design: they describe
+  // what the submission did NOT provide, which is the most useful thing a judge
+  // can be told and the least risky thing for a model to assert.
+  missingEvidence: v.array(v.string()),
+  questions: v.array(v.string()),
+});
+
+const projectBrief = v.object({
+  executiveSummary: v.string(),
+  problemSummary: v.string(),
+  solution: v.string(),
+  targetUsers: v.string(),
+  keyFeatures: v.array(v.string()),
+  techStack: v.array(v.string()),
+  architectureSummary: v.string(),
+  innovationIndicators: v.array(groundedClaim),
+  impactIndicators: v.array(groundedClaim),
+  implementationIndicators: v.array(groundedClaim),
+  missingInformation: v.array(v.string()),
 });
 
 const schema = defineSchema(
@@ -333,6 +371,37 @@ const schema = defineSchema(
       .index("by_judge", ["judgeId"])
       .index("by_team", ["teamId"])
       .index("by_judge_team", ["judgeId", "teamId"]),
+
+    // Deep, per-criterion analysis produced by the AI copilot.
+    //
+    // Deliberately a SEPARATE table from `scores`. No server function derives,
+    // writes, adjusts or reads a score through this table, so "the AI must never
+    // change a judge's score" is a property of the schema rather than a promise
+    // in a comment. A brief is only ever read alongside a scorecard, never
+    // merged into one.
+    judgingBriefs: defineTable({
+      hackathonId: v.id("hackathons"),
+      submissionId: v.id("submissions"),
+      teamId: v.id("teams"),
+      // "ready" briefs are safe to show; "failed" rows exist so a judge sees why
+      // nothing loaded and gets a retry rather than a blank space.
+      status: v.union(v.literal("ready"), v.literal("failed")),
+      error: v.optional(v.string()),
+      model: v.string(),
+      brief: v.optional(projectBrief),
+      criteria: v.record(v.string(), criterionAnalysis),
+      generatedAt: v.number(),
+      // How many model claims failed verbatim verification and were discarded.
+      // Surfaced in the UI, not hidden: a judge deserves to know the machine
+      // asserted things that did not check out.
+      droppedUnverified: v.number(),
+      // Changes whenever the submission's content changes, so a stale brief is
+      // never presented as current.
+      inputHash: v.string(),
+    })
+      .index("by_submission", ["submissionId"])
+      .index("by_team", ["teamId"])
+      .index("by_hackathon", ["hackathonId"]),
 
     // Append-only record of administrative actions. Written only by
     // `logAudit`; nothing updates or deletes a row.

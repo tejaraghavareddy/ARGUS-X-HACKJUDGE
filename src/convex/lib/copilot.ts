@@ -1,0 +1,402 @@
+/**
+ * AI Judge Copilot — shared contract.
+ *
+ * No Convex imports, so the same constants and types drive the server action
+ * and the React panel.
+ *
+ * ---------------------------------------------------------------------------
+ * The one idea this file exists to enforce
+ * ---------------------------------------------------------------------------
+ * "Do not invent facts that are not present in the submission" cannot be left
+ * as a prompt instruction — models follow it well but not perfectly, and a
+ * single confident invention in front of a judge is a serious product failure.
+ *
+ * So every claim the model makes ABOUT the submission must be accompanied by
+ * `sourceQuote`: a verbatim span copied out of the text the model was given.
+ * After generation, `groundClaims` re-reads each quote back against that same
+ * text and DISCARDS any claim whose quote is not actually there. A model that
+ * hallucinates produces a quote that does not exist, that quote fails the
+ * substring check, and the claim is dropped before it is ever stored or shown.
+ *
+ * The drops are counted and surfaced to the judge, rather than hidden.
+ */
+
+// Shown wherever a model produced no verifiable evidence. Exact wording is
+// specified by the product, so it lives in one place.
+export const NO_EVIDENCE = "Evidence not available in the submitted materials.";
+
+export type GroundedClaim = { claim: string; sourceQuote: string };
+
+export type CriterionAnalysis = {
+  evidence: GroundedClaim[];
+  strengths: GroundedClaim[];
+  concerns: GroundedClaim[];
+  missingEvidence: string[];
+  questions: string[];
+};
+
+export type ProjectBrief = {
+  executiveSummary: string;
+  problemSummary: string;
+  solution: string;
+  targetUsers: string;
+  keyFeatures: string[];
+  techStack: string[];
+  architectureSummary: string;
+  innovationIndicators: GroundedClaim[];
+  impactIndicators: GroundedClaim[];
+  implementationIndicators: GroundedClaim[];
+  missingInformation: string[];
+};
+
+export type CopilotOutput = {
+  brief: ProjectBrief;
+  criteria: Record<string, CriterionAnalysis>;
+};
+
+/** Overridable so the deployment is not pinned to a model that may be retired. */
+export const DEFAULT_MODEL = "claude-sonnet-5";
+
+export const MODEL_ENV_VAR = "ANTHROPIC_MODEL";
+export const API_KEY_ENV_VAR = "ANTHROPIC_API_KEY";
+
+// ---------------------------------------------------------------------------
+// Grounding
+// ---------------------------------------------------------------------------
+
+/**
+ * Aggressively normalized for comparison: case, punctuation and all whitespace
+ * differences are removed, so a model that re-wrapped a paragraph or dropped a
+ * comma still produces a match. Anything that changes actual words still fails.
+ */
+export function normalizeForGrounding(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[\s ]+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Minimum normalized length for a quote to count as evidence at all. */
+const MIN_QUOTE_LENGTH = 20;
+
+export function isGrounded(quote: string, sourceNormalized: string): boolean {
+  const normalized = normalizeForGrounding(quote);
+  if (normalized.length < MIN_QUOTE_LENGTH) return false;
+  return sourceNormalized.includes(normalized);
+}
+
+export type GroundingResult<T> = { verified: T[]; dropped: number };
+
+/**
+ * Keeps only claims whose quote is genuinely present in the source.
+ * Also caps each list so a verbose model cannot bury a judge in filler.
+ */
+export function groundClaims(
+  items: unknown,
+  sourceNormalized: string,
+  limit = 6,
+): GroundingResult<GroundedClaim> {
+  const verified: GroundedClaim[] = [];
+  let dropped = 0;
+
+  if (!Array.isArray(items)) return { verified, dropped: 0 };
+
+  for (const raw of items) {
+    if (verified.length >= limit) break;
+    if (!raw || typeof raw !== "object") {
+      dropped += 1;
+      continue;
+    }
+    const { claim, sourceQuote } = raw as Record<string, unknown>;
+    if (typeof claim !== "string" || typeof sourceQuote !== "string") {
+      dropped += 1;
+      continue;
+    }
+    if (!isGrounded(sourceQuote, sourceNormalized)) {
+      dropped += 1;
+      continue;
+    }
+    verified.push({
+      claim: claim.trim().slice(0, 600),
+      sourceQuote: sourceQuote.trim().slice(0, 600),
+    });
+  }
+
+  return { verified, dropped };
+}
+
+/** Plain strings need no grounding, but do need bounding and cleaning. */
+function cleanStrings(value: unknown, limit = 8, maxLength = 600): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim().slice(0, maxLength))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+/**
+ * Drop any criterion the model did not return, and any criterion the caller did
+ * not ask about. The rubric is the source of truth for which criteria exist —
+ * the model can populate them but never invent them.
+ */
+export function sanitizeCriteria(
+  raw: unknown,
+  criterionNames: string[],
+  sourceNormalized: string,
+): { criteria: Record<string, CriterionAnalysis>; dropped: number } {
+  const source = (raw ?? {}) as Record<string, unknown>;
+  const criteria: Record<string, CriterionAnalysis> = {};
+  let dropped = 0;
+
+  for (const name of criterionNames) {
+    const entry = (source[name] ?? {}) as Record<string, unknown>;
+    const evidence = groundClaims(entry.evidence, sourceNormalized, 6);
+    const strengths = groundClaims(entry.strengths, sourceNormalized, 4);
+    const concerns = groundClaims(entry.concerns, sourceNormalized, 4);
+    dropped += evidence.dropped + strengths.dropped + concerns.dropped;
+
+    criteria[name] = {
+      evidence: evidence.verified,
+      strengths: strengths.verified,
+      concerns: concerns.verified,
+      missingEvidence: cleanStrings(entry.missingEvidence, 6, 400),
+      questions: cleanStrings(entry.questions, 6, 400),
+    };
+  }
+
+  return { criteria, dropped };
+}
+
+// ---------------------------------------------------------------------------
+// Source text
+// ---------------------------------------------------------------------------
+
+export type SourceInput = {
+  projectName: string;
+  techStack: string[];
+  problemStatement?: string | null;
+  solutionDescription?: string | null;
+  targetUsers?: string | null;
+  keyFeatures: string[];
+  innovation?: string | null;
+  expectedImpact?: string | null;
+  implementationDetails?: string | null;
+  futureScope?: string | null;
+  abstract?: string | null;
+  documentNames: string[];
+};
+
+/**
+ * The exact text the model is shown and the exact text every quote is verified
+ * against. Built once and used for both, so there is no possibility of the two
+ * drifting apart — which would make verification meaningless.
+ *
+ * `blind` drops the team's identity entirely, so under blind judging the model
+ * is structurally unable to leak a name into its analysis.
+ */
+export function buildSourceText(input: SourceInput, blind: boolean): string {
+  const parts: string[] = [];
+  const push = (label: string, value: string | null | undefined) => {
+    const text = (value ?? "").trim();
+    if (text) parts.push(`${label}:\n${text}`);
+  };
+
+  push("Project name", input.projectName);
+  push("Problem statement", input.problemStatement);
+  push("Solution description", input.solutionDescription);
+  push("Target users", input.targetUsers);
+  if (input.keyFeatures.length > 0) {
+    parts.push(`Key features:\n${input.keyFeatures.map((f) => `- ${f}`).join("\n")}`);
+  }
+  push("Innovation", input.innovation);
+  push("Expected impact", input.expectedImpact);
+  push("Implementation details", input.implementationDetails);
+  push("Future scope", input.futureScope);
+  push("Summary", input.abstract);
+  if (input.techStack.length > 0) {
+    parts.push(`Technology stack:\n${input.techStack.join(", ")}`);
+  }
+  if (input.documentNames.length > 0) {
+    // Only the NAMES of attached documents. The copilot reads the submission
+    // text, not the files, and must never imply it opened them.
+    parts.push(
+      `Attached documents (names only — contents were not provided):\n${input.documentNames
+        .map((d) => `- ${d}`)
+        .join("\n")}`,
+    );
+  }
+  if (blind) {
+    parts.push(
+      "Note: team identity was withheld from this analysis because blind judging is enabled.",
+    );
+  }
+  return parts.join("\n\n");
+}
+
+/** Stable hash of the source text, used to detect a stale brief. */
+export function hashSource(text: string): string {
+  // FNV-1a. Not cryptographic — this only needs to change when the text does.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+// ---------------------------------------------------------------------------
+// Model contract
+// ---------------------------------------------------------------------------
+
+const claimList = (description: string) => ({
+  type: "array",
+  description,
+  items: {
+    type: "object",
+    properties: {
+      claim: {
+        type: "string",
+        description:
+          "A short, factual observation stated in neutral language. Never a verdict, never a grade, never a ranking.",
+      },
+      sourceQuote: {
+        type: "string",
+        description:
+          "A VERBATIM span copied exactly from the submission text that supports this claim. Must appear character-for-character (ignoring only line wrapping) in the submission. If you cannot quote a span, do not include the claim.",
+      },
+    },
+    required: ["claim", "sourceQuote"],
+    additionalProperties: false,
+  },
+});
+
+const stringList = (description: string) => ({
+  type: "array",
+  description,
+  items: { type: "string" },
+});
+
+/**
+ * The JSON tool handed to the model. Using a tool rather than free text means
+ * the response is constrained to this shape by construction, so there is no
+ * "sorry, I can't do that" prose path to handle.
+ */
+export const BRIEF_TOOL = {
+  name: "record_brief",
+  description:
+    "Record a structured, evidence-grounded analysis of one hackathon submission.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      brief: {
+        type: "object",
+        properties: {
+          executiveSummary: {
+            type: "string",
+            description:
+              "Two or three sentences describing what this project is. Description only — no evaluation.",
+          },
+          problemSummary: {
+            type: "string",
+            description: "Restates the problem in your own words, neutrally.",
+          },
+          solution: {
+            type: "string",
+            description: "Describes the proposed solution factually.",
+          },
+          targetUsers: {
+            type: "string",
+            description: "Who the team says this is for.",
+          },
+          keyFeatures: stringList("The features the team listed, restated concisely."),
+          techStack: stringList(
+            "Technologies named in the submission. Only ones actually present in the text.",
+          ),
+          architectureSummary: {
+            type: "string",
+            description:
+              "How the system appears to be put together, based only on the text. If the submission does not describe the architecture, return an empty string.",
+          },
+          innovationIndicators: claimList(
+            "Observations bearing on novelty, each with a verbatim quote.",
+          ),
+          impactIndicators: claimList(
+            "Observations bearing on expected impact, each with a verbatim quote.",
+          ),
+          implementationIndicators: claimList(
+            "Observations bearing on how well it is built, each with a verbatim quote.",
+          ),
+          missingInformation: stringList(
+            "Things a judge would need that the submission does not provide. Phrase as absences, e.g. 'No test results are reported.'",
+          ),
+        },
+        required: [
+          "executiveSummary",
+          "problemSummary",
+          "solution",
+          "targetUsers",
+          "keyFeatures",
+          "techStack",
+          "architectureSummary",
+          "innovationIndicators",
+          "impactIndicators",
+          "implementationIndicators",
+          "missingInformation",
+        ],
+        additionalProperties: false,
+      },
+      criteria: {
+        type: "object",
+        description:
+          "One entry per judging criterion, keyed by the EXACT criterion name supplied in the user message. Do not add, rename or omit criteria.",
+        additionalProperties: {
+          type: "object",
+          properties: {
+            evidence: claimList(
+              "Verbatim-backed evidence in the submission relevant to this criterion.",
+            ),
+            strengths: claimList(
+              "Potential strengths, each backed by a verbatim quote.",
+            ),
+            concerns: claimList(
+              "Points a human judge may want to probe. State them as observations about the text, never as conclusions or grades.",
+            ),
+            missingEvidence: stringList(
+              "Evidence this criterion would need that the submission does not contain.",
+            ),
+            questions: stringList(
+              "Questions the judge may want to ask the team about this criterion.",
+            ),
+          },
+          required: [
+            "evidence",
+            "strengths",
+            "concerns",
+            "missingEvidence",
+            "questions",
+          ],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["brief", "criteria"],
+    additionalProperties: false,
+  },
+};
+
+export const SYSTEM_PROMPT = `You are an analysis assistant supporting human judges at a hackathon.
+
+You produce evidence and summaries. You do NOT judge.
+
+ABSOLUTE RULES
+1. Never assign, suggest, imply or predict a score, grade, rank or winner. Not in any field, not in any wording.
+2. Never say a submission is "the best", "should win", "deserves" a score, or that it is "strong" or "weak" in a grading sense. Describe what the text says; let the human decide what it means.
+3. Never introduce a fact that is not in the submission text. You do not know anything about these projects beyond that text, and you have not opened any attached files — only their names are given to you.
+4. Every claim you make about the submission must carry a verbatim \`sourceQuote\` copied from the text. If you cannot quote a span that supports the claim, leave the claim out. An empty list is always an acceptable answer; a guess never is.
+5. Phrase \`concerns\` and \`missingEvidence\` as things a human should verify, not as conclusions.
+6. If a field has no basis in the text, return an empty array or an empty string. Do not pad.
+
+Write in plain, neutral language. Prefer the team's own terminology over paraphrase.`;
