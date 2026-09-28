@@ -1,0 +1,160 @@
+/* DO NOT CHANGE */
+@import "tailwindcss";
+@import "tw-animate-css";
+@custom-variant dark (&:is(.dark *));
+
+/* DO NOT CHANGE */
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  /* Neobrutalism accent blocks, used for flat colour coding by track/role. */
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+}
+
+/* CHANGE VALUES FOR THEME */
+:root {
+  --radius: 0.5rem;
+
+  /* Neobrutalism Minimalism: one ink colour does all the outlining, every
+     surface is flat, and colour is only ever used to block, never to blend. */
+  --ink: #111111;
+  --surface: #ffffff;
+
+  --background: #f2f2ec;
+  --foreground: #111111;
+  --card: #ffffff;
+  --card-foreground: #111111;
+  --popover: #ffffff;
+  --popover-foreground: #111111;
+  --primary: #111111;
+  --primary-foreground: #ffffff;
+  --secondary: #e6e6de;
+  --secondary-foreground: #111111;
+  --muted: #e6e6de;
+  --muted-foreground: #4f4f47;
+  --accent: #ffe500;
+  --accent-foreground: #111111;
+  --destructive: #d8382a;
+  /* Borders are the structure of the whole design, so they are full-strength
+     ink rather than a soft hairline. */
+  --border: #111111;
+  --input: #111111;
+  --ring: #111111;
+  --chart-1: #ffe500;
+  --chart-2: #2b6be4;
+  --chart-3: #1f9d55;
+  --chart-4: #d8382a;
+  --chart-5: #7b3fe4;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #111111;
+  --sidebar-primary: #111111;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ffe500;
+  --sidebar-accent-foreground: #111111;
+  --sidebar-border: #111111;
+  --sidebar-ring: #111111;
+
+  /* Hard offset shadow: no blur, no spread. The single depth cue in the app. */
+  --nb-shadow: 4px 4px 0 0 var(--ink);
+  --nb-shadow-sm: 2px 2px 0 0 var(--ink);
+  --nb-shadow-lg: 6px 6px 0 0 var(--ink);
+}
+
+/* Square corners are the one non-negotiable of the theme: every `rounded-*`
+   utility in the shadcn primitives resolves through this scale. */
+:root {
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family:
+      ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button:not([disabled]),
+  [role="button"]:not([disabled]) {
+    cursor: pointer;
+  }
+  /* Numerals line up in tables and stat tiles. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* The three surfaces the whole app is built from. */
+  .nb-card {
+    border: 2px solid var(--ink);
+    box-shadow: var(--nb-shadow);
+    background: var(--surface);
+  }
+  .nb-flat {
+    /* Flat block with no shadow, for dense table chrome and side panels. */
+    border: 2px solid var(--ink);
+    background: var(--surface);
+  }
+  .nb-inset {
+    border: 2px solid var(--ink);
+    background: #e6e6de;
+  }
+
+  /* Buttons translate onto their own shadow when pressed — the only motion
+     in the app, and it reads as physical rather than decorative. */
+  .nb-press {
+    box-shadow: var(--nb-shadow);
+    transition:
+      transform 80ms ease,
+      box-shadow 80ms ease;
+  }
+  .nb-press:hover:not(:disabled) {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 0 var(--ink);
+  }
+  .nb-press:active:not(:disabled) {
+    transform: translate(2px, 2px);
+    box-shadow: 0 0 0 0 var(--ink);
+  }
+}
