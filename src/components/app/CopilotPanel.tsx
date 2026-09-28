@@ -16,13 +16,48 @@ import { Button } from "@/components/ui/button";
 import { NO_EVIDENCE } from "@/convex/lib/copilot";
 import { cn } from "@/lib/utils";
 
+type QuoteRef = { quote: string; source: { sourceId: string; source: string; page?: number } };
+
 type ChatEntry = {
   role: "user" | "model";
   text: string;
-  quotes?: string[];
+  quotes?: QuoteRef[];
   notInSource?: boolean;
   dropped?: number;
 };
+
+/**
+ * The three evidence tiers the product distinguishes, shown as a legend so a
+ * judge always knows what kind of statement they are reading.
+ */
+function TierLegend() {
+  const tiers = [
+    { label: "Submission evidence", desc: "verbatim, from the team's materials — checked word-for-word", cls: "text-success-foreground" },
+    { label: "AI interpretation", desc: "the machine's neutral reading — verify before relying on it", cls: "text-info-foreground" },
+    { label: "Human assessment", desc: "the scorecard is yours alone; the AI never writes here", cls: "text-foreground" },
+  ];
+  return (
+    <div className="mt-3 grid gap-1.5 rounded-md border border-border bg-muted px-3 py-2.5 sm:grid-cols-3">
+      {tiers.map((t, i) => (
+        <p key={t.label} className="text-[0.6875rem] leading-relaxed text-muted-foreground">
+          <span className={`font-semibold ${t.cls}`}>{i + 1}. {t.label}</span>
+          {" — "}
+          {t.desc}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/** A small chip naming the document (and page) a quote was verified against. */
+function SourceChip({ source }: { source: { source: string; page?: number } }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded bg-secondary px-1.5 py-0.5 font-mono text-[0.625rem] text-secondary-foreground">
+      {source.source}
+      {source.page !== undefined && <span className="font-semibold">p.{source.page}</span>}
+    </span>
+  );
+}
 
 /**
  * The AI Judge Copilot.
@@ -383,11 +418,17 @@ export function CopilotPanel({ teamId }: { teamId: Id<"teams"> }) {
                     <ul className="mt-1.5 space-y-1 border-t border-border/40 pt-1.5">
                       {m.quotes.map((q) => (
                         <li
-                          key={q}
-                          className="flex gap-1.5 text-[0.6875rem] text-muted-foreground"
+                          key={`${q.quote}::${q.source.sourceId}`}
+                          className="text-[0.6875rem] text-muted-foreground"
                         >
-                          <Quote className="mt-px size-3 shrink-0" />
-                          <span>“{q}”</span>
+                          <p className="flex gap-1.5">
+                            <Quote className="mt-px size-3 shrink-0" />
+                            <span>“{q.quote}”</span>
+                          </p>
+                          <p className="mt-0.5 flex items-center gap-1 pl-4.5">
+                            <span className="font-semibold">Source:</span>
+                            <SourceChip source={q.source} />
+                          </p>
                         </li>
                       ))}
                     </ul>

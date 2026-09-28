@@ -50,11 +50,19 @@ export interface AIProvider {
     schemaDescription: string;
     /** Prior conversation turns for chat-style calls (oldest first). */
     history?: ChatTurn[];
+    /** Inline binary attachments (e.g. PDF documents to transcribe). */
+    attachments?: ProviderAttachment[];
   }): Promise<StructuredResult>;
 }
 
 /** One prior turn of a chat conversation. */
 export type ChatTurn = { role: "user" | "model"; text: string };
+
+/**
+ * A binary attachment sent inline to the model (e.g. a PDF for transcription).
+ * `data` is base64. Providers that cannot handle attachments reject them.
+ */
+export type ProviderAttachment = { mimeType: string; data: string };
 
 /**
  * Errors that reach the judge as a "failed" brief row with a retry, rather
@@ -176,6 +184,7 @@ export class GeminiProvider implements AIProvider {
     schemaName: string;
     schemaDescription: string;
     history?: ChatTurn[];
+    attachments?: ProviderAttachment[];
   }): Promise<StructuredResult> {
     // Gemini's responseSchema carries no schema name/description; the fields
     // exist on the interface so providers that need them (e.g. OpenAI-style
@@ -190,7 +199,15 @@ export class GeminiProvider implements AIProvider {
           role: turn.role,
           parts: [{ text: turn.text }],
         })),
-        { role: "user", parts: [{ text: input.prompt }] },
+        {
+          role: "user",
+          parts: [
+            { text: input.prompt },
+            ...(input.attachments ?? []).map((a) => ({
+              inlineData: { mimeType: a.mimeType, data: a.data },
+            })),
+          ],
+        },
       ],
       // Temperature 1.0 is Google's explicit recommendation for Gemini 3
       // reasoning models; lower values can degrade or loop generation.

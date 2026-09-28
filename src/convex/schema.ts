@@ -88,9 +88,20 @@ const aiReview = v.object({
  * silently discards any claim it cannot find, which is what turns "do not
  * invent facts" from a prompt instruction into something the database enforces.
  */
+const sourceAttribution = v.object({
+  /** Stable corpus document id, e.g. "form", "github-readme", "pdf:slides.pdf". */
+  sourceId: v.string(),
+  /** Human label, e.g. "Project documentation" or "Uploaded document (PDF) — slides.pdf". */
+  source: v.string(),
+  /** Page number for paginated sources (PDFs); 1-based. */
+  page: v.optional(v.number()),
+});
+
 const groundedClaim = v.object({
   claim: v.string(),
   sourceQuote: v.string(),
+  /** Where the quote was verified. Server-assigned; never model-supplied. */
+  source: v.optional(sourceAttribution),
 });
 
 const criterionAnalysis = v.object({
@@ -430,6 +441,36 @@ const schema = defineSchema(
       // Surfaced in the UI, not hidden: a judge deserves to know the machine
       // asserted things that did not check out.
       droppedUnverified: v.number(),
+      // The evidence corpus the analysis was grounded in, with document sizes,
+      // so a judge can see which materials the AI read.
+      sources: v.array(
+        v.object({
+          sourceId: v.string(),
+          source: v.string(),
+          chars: v.number(),
+          pages: v.optional(v.number()),
+        }),
+      ),
+      // Notes about materials that could not be read (e.g. a PDF that failed
+      // transcription), so corpus gaps are explainable rather than silent.
+      corpusNotes: v.array(v.string()),
+      // The evidence corpus used for chat grounding, stored at generate time
+      // (bounded per document) so the chat does not refetch GitHub or
+      // re-transcribe PDFs on every message.
+      corpus: v.optional(
+        v.array(
+          v.object({
+            sourceId: v.string(),
+            source: v.string(),
+            text: v.string(),
+            pages: v.optional(
+              v.array(
+                v.object({ start: v.number(), end: v.number(), page: v.number() }),
+              ),
+            ),
+          }),
+        ),
+      ),
       // Changes whenever the submission's content changes, so a stale brief is
       // never presented as current.
       inputHash: v.string(),
@@ -474,6 +515,9 @@ const schema = defineSchema(
         warning: v.optional(v.string()),
       }),
       sections: v.array(repoSection),
+      // Short verbatim excerpt of the repository README, stored so the AI
+      // copilot can ground claims in it without refetching GitHub.
+      readmeExcerpt: v.optional(v.string()),
       summary: v.string(),
       verification: v.array(v.string()),
       // Populated only when the optional narrative layer ran successfully.

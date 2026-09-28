@@ -24,13 +24,21 @@ import {
   DEFAULT_MODEL,
   MODEL_ENV_VAR,
   PROVIDER_NAME,
+  PDF_TRANSCRIBE_PROMPT,
+  PDF_TRANSCRIBE_SCHEMA,
   SYSTEM_PROMPT,
+  assembleTranscription,
   buildBriefSchema,
   buildSourceText,
+  buildCorpus,
   cleanStrings,
   groundClaims,
   groundQuotes,
   hashSource,
+  type EvidenceCorpus,
+  type PdfTranscription,
+  type SourceDocument,
+  type SourcesUsed,
   normalizeForGrounding,
   sanitizeCriteria,
   type CopilotOutput,
@@ -56,6 +64,16 @@ import {
  */
 
 const MAX_SOURCE_CHARS = 24_000;
+/** Per-document ceiling for non-form corpus documents. */
+const MAX_DOC_CHARS = 20_000;
+/** Corpus ceiling for chat-time reuse (stored in the brief row). */
+const MAX_CORPUS_CHARS = 60_000;
+/** Ceiling for the stored, verbatim corpus handed to chat. */
+const MAX_STORED_CORPUS_CHARS = 60_000;
+/** Max uploaded files read into the corpus, in submission-file order. */
+const MAX_FILES_IN_CORPUS = 8;
+/** Max uploaded files sent to PDF transcription, per generation. */
+const MAX_PDF_TRANSCRIPTIONS = 3;
 const MAX_CHAT_HISTORY = 8;
 const MAX_ANSWER_CHARS = 4_000;
 
@@ -106,6 +124,8 @@ export const briefForSubmission = query({
       inputHash: brief.inputHash,
       brief: brief.brief ?? null,
       criteria: brief.criteria,
+      sources: brief.sources ?? [],
+      corpusNotes: brief.corpusNotes ?? [],
     };
   },
 });
@@ -114,16 +134,47 @@ export const briefForSubmission = query({
 // Generate (submission analysis)
 // ---------------------------------------------------------------------------
 
+/**
+ * Transcribe an uploaded PDF with the provider's multimodal path so the text
+ * becomes quotable corpus, page by page. Files that cannot be read throw and
+ * are recorded as a corpus note instead of failing the generation.
+ */
+async function transcribePdf(
+  provider: { generateStructured: (i: never) => Promise<{ parsed: unknown }> },
+  pdf: { fileName: string; storageId: string },
+  getUrl: (storageId: string) => Promise<string | null>,
+): Promise<PdfTranscription> {
+  const url = await getUrl(pdf.storageId);
+  if (!url) throw new Error("no readable storage URL");
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`storage fetch failed (${response.status})`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength === 0 || bytes.byteLength > 15_000_000) {
+    throw new Error("file too large to transcribe");
+  }
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  const result = await provider.generateStructured({
+    system: PDF_TRANSCRIBE_PROMPT,
+    prompt: `Transcribe this document (${pdf.fileName}).`,
+    schema: PDF_TRANSCRIBE_SCHEMA as unknown as Record<string, unknown>,
+    schemaName: "pdf_transcription",
+    schemaDescription: "Page-by-page verbatim transcription of one document.",
+    attachments: [{ mimeType: "application/pdf", data: btoa(binary) }],
+  } as never);
+  return assembleTranscription(result.parsed);
+}
+
 /** Normalize the raw brief object the model returned into stored shape. */
 function briefFromRaw(
   rawBrief: Record<string, unknown>,
-  sourceNormalized: string,
+  corpus: EvidenceCorpus,
 ): { brief: ProjectBrief; dropped: number } {
-  const innovation = groundClaims(rawBrief.innovationIndicators, sourceNormalized, 5);
-  const impact = groundClaims(rawBrief.impactIndicators, sourceNormalized, 5);
+  const innovation = groundClaims(rawBrief.innovationIndicators, corpus, 5);
+  const impact = groundClaims(rawBrief.impactIndicators, corpus, 5);
   const implementation = groundClaims(
     rawBrief.implementationIndicators,
-    sourceNormalized,
+    corpus,
     5,
   );
 
@@ -208,9 +259,15 @@ export const generate = action({
       };
     }
 
-    // The source text is truncated to a hard ceiling BEFORE it is hashed, so
-    // the hash describes exactly what the model saw.
-    const sourceText = buildSourceText(
+    // ------------------------------------------------------------------
+    // Evidence corpus: every participant-provided material the model may
+    // quote from. Document 0 is the structured submission form; the GitHub
+    // README and repo analysis follow; uploaded documents come last (form
+    // first, so it wins `resolveSource` ties).
+    // ------------------------------------------------------------------
+    const documents: SourceDocument[] = [];
+
+    const formText = buildSourceText(
       {
         projectName: submission.projectName,
         techStack: submission.techStack,
@@ -227,6 +284,62 @@ export const generate = action({
       },
       hackathon.blindJudging,
     ).slice(0, MAX_SOURCE_CHARS);
+    if (formText.trim()) {
+      documents.push({ sourceId: "form", source: "Project documentation", text: formText });
+    }
+
+    if (submission.githubReadme?.text) {
+      documents.push({
+        sourceId: "github-readme",
+        source: "README (GitHub)",
+        text: submission.githubReadme.text.slice(0, MAX_DOC_CHARS),
+      });
+    }
+    if (submission.githubSummary) {
+      documents.push({
+        sourceId: "github-analysis",
+        source: "GitHub repository analysis",
+        text: submission.githubSummary.slice(0, MAX_DOC_CHARS),
+      });
+    }
+
+    // Uploaded text documents, keyed to the exact file the quote came from.
+    for (const file of submission.uploadedTexts ?? []) {
+      if (!file.text?.trim()) continue;
+      documents.push({
+        sourceId: `file:${file.fileName}`,
+        source: `Uploaded document — ${file.fileName}`,
+        text: file.text.slice(0, MAX_DOC_CHARS),
+      });
+    }
+
+    // Uploaded PDFs are transcribed by the provider (multimodal) and each
+    // transcribed chunk is stored with its page range, so a quote from a PDF
+    // resolves to the exact page it appeared on.
+    const pdfNotes: string[] = [];
+    for (const pdf of (submission.pdfDocuments ?? []).slice(0, MAX_PDF_TRANSCRIPTIONS)) {
+      try {
+        const transcription = await transcribePdf(provider, pdf, (storageId) =>
+          ctx.storage.getUrl(storageId as unknown as Id<"_storage">),
+        );
+        if (transcription.text.trim()) {
+          documents.push({
+            sourceId: `pdf:${pdf.fileName}`,
+            source: `Uploaded document (PDF) — ${pdf.fileName}`,
+            text: transcription.text.slice(0, MAX_DOC_CHARS),
+            pages: transcription.pages,
+          });
+        }
+      } catch {
+        // A failed transcription narrows the corpus; it never fails the run.
+        pdfNotes.push(
+          `${pdf.fileName} could not be transcribed, so quotes from it are unavailable`,
+        );
+      }
+    }
+
+    // The hashed input covers exactly what the model will see, in order.
+    const sourceText = documents.map((d) => d.text).join("\n\n");
 
     const criterionLines = criteria
       .map((c) => `- "${c.name}": ${c.description}`)
@@ -274,21 +387,39 @@ Produce the brief and one \`criteria\` entry for EVERY criterion listed above.`;
 
     // --- Verification -----------------------------------------------------
     // Everything below is the trust boundary. The model has had its say; what
-    // gets stored is only what can be traced back to the submission text.
-    const sourceNormalized = normalizeForGrounding(sourceText);
+    // gets stored is only what can be traced back to a real document in the
+    // evidence corpus, with the source (and page, when available) attached.
+    const corpus = buildCorpus(documents);
+    void corpus;
     const raw = (parsed ?? {}) as Record<string, unknown>;
     const rawBrief = (raw.brief ?? {}) as Record<string, unknown>;
 
-    const { brief, dropped: briefDropped } = briefFromRaw(rawBrief, sourceNormalized);
+    const { brief, dropped: briefDropped } = briefFromRaw(rawBrief, corpus);
     const { criteria: sanitizedCriteria, dropped: criteriaDropped } =
       sanitizeCriteria(
         raw.criteria,
         criteria.map((c) => c.name),
-        sourceNormalized,
+        corpus,
       );
 
     const droppedUnverified = briefDropped + criteriaDropped;
     const result: CopilotOutput = { brief, criteria: sanitizedCriteria };
+
+    // Provenance: which documents the analysis was grounded in, plus notes
+    // about anything that could not be read. The bounded corpus is stored so
+    // chat re-uses exactly what the brief was verified against.
+    const sources = documents.map((d): SourcesUsed => ({
+      sourceId: d.sourceId,
+      source: d.source,
+      chars: d.text.length,
+      ...(d.pages?.length ? { pages: d.pages.length } : {}),
+    }));
+    const storedCorpus = documents.map((d) => ({
+      sourceId: d.sourceId,
+      source: d.source,
+      text: d.text.slice(0, Math.floor(MAX_STORED_CORPUS_CHARS / Math.max(documents.length, 1))),
+      ...(d.pages ? { pages: d.pages } : {}),
+    }));
 
     await ctx.runMutation(internal.copilot.saveBrief, {
       hackathonId: hackathon._id,
@@ -298,6 +429,9 @@ Produce the brief and one \`criteria\` entry for EVERY criterion listed above.`;
       model: modelUsed,
       inputHash: hashSource(sourceText),
       droppedUnverified,
+      sources,
+      corpusNotes: pdfNotes,
+      corpus: storedCorpus,
       result,
     });
 
@@ -329,7 +463,7 @@ export const chat = action({
     | {
         ok: true;
         answer: string;
-        quotes: string[];
+        quotes: { quote: string; source: { sourceId: string; source: string; page?: number } }[];
         notInSource: boolean;
         dropped: number;
       }
@@ -355,12 +489,28 @@ export const chat = action({
     const accessError = await judgeAccess(ctx, user, args.teamId);
     if (accessError) return { ok: false, error: accessError };
 
-    const submission = await ctx.runQuery(internal.copilot.submissionSource, {
+    // Chat grounds in the STORED corpus from the last successful generation —
+    // exactly what the brief was verified against — rather than re-fetching
+    // GitHub or re-transcribing PDFs on every message.
+    const briefRow = await ctx.runQuery(internal.copilot.briefRowForChat, {
       teamId: args.teamId,
     });
-    if (!submission) {
-      return { ok: false, error: "This team has no submission to discuss yet." };
+    if (!briefRow?.corpus?.length) {
+      return {
+        ok: false,
+        error:
+          "Generate the AI analysis first; chat grounds in that analysis's evidence corpus.",
+      };
     }
+
+    const corpus = buildCorpus(
+      briefRow.corpus.map((d) => ({
+        sourceId: d.sourceId,
+        source: d.source,
+        text: d.text,
+        ...(d.pages ? { pages: d.pages } : {}),
+      })),
+    );
 
     let provider;
     try {
@@ -373,24 +523,6 @@ export const chat = action({
       return { ok: false, error: message };
     }
 
-    const sourceText = buildSourceText(
-      {
-        projectName: submission.projectName,
-        techStack: submission.techStack,
-        problemStatement: submission.problemStatement,
-        solutionDescription: submission.solutionDescription,
-        targetUsers: submission.targetUsers,
-        keyFeatures: submission.keyFeatures,
-        innovation: submission.innovation,
-        expectedImpact: submission.expectedImpact,
-        implementationDetails: submission.implementationDetails,
-        futureScope: submission.futureScope,
-        abstract: submission.abstract,
-        documentNames: submission.documentNames,
-      },
-      hackathon.blindJudging,
-    ).slice(0, MAX_SOURCE_CHARS);
-
     // Cap and clean the client-supplied history: the model sees only recent,
     // bounded turns, and nothing the client sent can change the source text.
     const history: ChatTurn[] = (args.history ?? [])
@@ -400,7 +532,12 @@ export const chat = action({
 
     try {
       const result = await provider.generateStructured({
-        system: `${CHAT_SYSTEM_PROMPT}\n\nSUBMISSION TEXT (the ONLY source of information you have):\n<submission>\n${sourceText}\n</submission>`,
+        system: `${CHAT_SYSTEM_PROMPT}\n\nEVIDENCE CORPUS (the ONLY source of information you have; each document is labeled with its source):\n${corpus.documents
+          .map(
+            (d, i) =>
+              `<document source="${d.source}">\n${corpus.normalized[i] ? d.text : d.text}\n</document>`,
+          )
+          .join("\n")}`,
         prompt: question,
         schema: CHAT_SCHEMA as unknown as Record<string, unknown>,
         schemaName: "judge_chat_answer",
@@ -412,14 +549,14 @@ export const chat = action({
       const notInSource = raw.notInSource === true;
       const answer = (raw.answer ?? "").toString().slice(0, MAX_ANSWER_CHARS);
 
-      // Same trust boundary as the brief: quotes must be verbatim in the
-      // source text, or they are discarded (and counted). If the model says
-      // the answer is not in the source, any quotes it produced are dropped
-      // along with the claim.
-      const sourceNormalized = normalizeForGrounding(sourceText);
+      // Same trust boundary as the brief: quotes must be verbatim in SOME
+      // document of the evidence corpus, or they are discarded (and counted).
+      // Each surviving quote carries the source (and page when available) it
+      // was verified against. If the model says the answer is not in the
+      // source, any quotes it produced are dropped along with the claim.
       const grounded = notInSource
         ? { verified: [], dropped: 0 }
-        : groundQuotes(raw.quotes, sourceNormalized, 5);
+        : groundQuotes(raw.quotes, corpus, 5);
 
       return {
         ok: true,
@@ -444,7 +581,12 @@ export const chat = action({
 // Internals
 // ---------------------------------------------------------------------------
 
-/** The submission fields the copilot is allowed to read. */
+/**
+ * The submission materials the copilot is allowed to read — the full evidence
+ * corpus source list: the structured form, the GitHub README excerpt and
+ * analyzer report (when a repo analysis has been run), and every uploaded
+ * file (text read via storage; PDFs flagged for page-aware transcription).
+ */
 export const submissionSource = internalQuery({
   args: { teamId: v.id("teams") },
   handler: async (ctx, args) => {
@@ -462,6 +604,50 @@ export const submissionSource = internalQuery({
         .collect(),
     ]);
 
+    const uploadedTexts: { fileName: string; text: string | null }[] = [];
+    const pdfDocuments: { fileName: string; storageId: string }[] = [];
+    for (const file of files) {
+      if (file.contentType === "application/pdf") {
+        pdfDocuments.push({ fileName: file.fileName, storageId: file.storageId });
+      } else if (
+        /^text\//.test(file.contentType) ||
+        /json|markdown|csv|xml|yaml/i.test(file.contentType)
+      ) {
+        const blob = await ctx.storage.getUrl(file.storageId as unknown as Id<"_storage">);
+        let text: string | null = null;
+        try {
+          const response = await fetch(blob);
+          if (response.ok && (await response.arrayBuffer()).byteLength <= 2_000_000) {
+            text = await response.text();
+          }
+        } catch {
+          text = null;
+        }
+        uploadedTexts.push({ fileName: file.fileName, text });
+      }
+    }
+
+    const repoAnalysis = await ctx.db
+      .query("repoAnalyses")
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+      .first();
+
+    // The repo analyzer's report is participant-derived evidence too (it
+    // describes THEIR repository), so it belongs in the copilot's corpus.
+    const githubSummary = repoAnalysis
+      ? [
+          `Repository: ${repoAnalysis.repoFullName ?? "unknown"}.`,
+          ...repoAnalysis.sections.map((section) =>
+            section.noEvidence
+              ? `${section.title}: supporting evidence was not identified in the analyzed repository.`
+              : `${section.title}: ${section.evidence
+                  .map((e) => `${e.label} (source: ${e.source})`)
+                  .join("; ")}`, 
+          ),
+          `README excerpt: ${repoAnalysis.readmeExcerpt ?? "not retrieved"}.`,
+        ].join("\n")
+      : null;
+
     return {
       submissionId: submission._id as Id<"submissions">,
       projectName: team?.projectName ?? "",
@@ -476,7 +662,29 @@ export const submissionSource = internalQuery({
       futureScope: submission.futureScope ?? null,
       abstract: submission.abstract ?? null,
       documentNames: files.map((f) => f.fileName),
+      githubReadme: repoAnalysis?.readmeExcerpt
+        ? { text: repoAnalysis.readmeExcerpt }
+        : null,
+      githubSummary,
+      uploadedTexts,
+      pdfDocuments,
     };
+  },
+});
+
+/**
+ * The stored corpus from the team's last successful generation — the exact
+ * evidence chat grounds in. Returns null when no ready brief exists.
+ */
+export const briefRowForChat = internalQuery({
+  args: { teamId: v.id("teams") },
+  handler: async (ctx, args) => {
+    const brief = await ctx.db
+      .query("judgingBriefs")
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+      .first();
+    if (!brief || brief.status !== "ready" || !brief.corpus?.length) return null;
+    return { corpus: brief.corpus };
   },
 });
 
@@ -508,6 +716,25 @@ export const saveBrief = internalMutation({
     model: v.string(),
     inputHash: v.string(),
     droppedUnverified: v.number(),
+    sources: v.array(
+      v.object({
+        sourceId: v.string(),
+        source: v.string(),
+        chars: v.number(),
+        pages: v.optional(v.number()),
+      }),
+    ),
+    corpusNotes: v.array(v.string()),
+    corpus: v.array(
+      v.object({
+        sourceId: v.string(),
+        source: v.string(),
+        text: v.string(),
+        pages: v.optional(
+          v.array(v.object({ start: v.number(), end: v.number(), page: v.number() })),
+        ),
+      }),
+    ),
     result: v.any(),
   },
   handler: async (ctx, args) => {
@@ -530,6 +757,9 @@ export const saveBrief = internalMutation({
       criteria: result.criteria,
       generatedAt: Date.now(),
       droppedUnverified: args.droppedUnverified,
+      sources: args.sources,
+      corpusNotes: args.corpusNotes,
+      corpus: args.corpus,
       inputHash: args.inputHash,
     });
   },
@@ -569,6 +799,8 @@ export const saveFailedBrief = internalMutation({
       criteria: {},
       generatedAt: Date.now(),
       droppedUnverified: 0,
+      sources: [],
+      corpusNotes: [],
       inputHash: "",
     });
   },

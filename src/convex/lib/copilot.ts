@@ -24,9 +24,39 @@
 
 // Shown wherever a model produced no verifiable evidence. Exact wording is
 // specified by the product, so it lives in one place.
-export const NO_EVIDENCE = "Evidence not available in the submitted materials.";
+export const NO_EVIDENCE = "Evidence not available.";
 
-export type GroundedClaim = { claim: string; sourceQuote: string };
+/**
+ * Where a piece of evidence came from. Every verified claim carries one so a
+ * judge can always answer "says who?" — the submission text, the GitHub
+ * README, the repo analyzer, or an uploaded document (with a page number
+ * when the document has pages).
+ */
+export type SourceAttribution = {
+  /** Stable document id from the evidence corpus ("form", "github-readme", …). */
+  sourceId: string;
+  /** Human label shown in the UI, e.g. "Project documentation" or "README (GitHub)". */
+  source: string;
+  /** Page number for paginated sources (PDFs); 1-based. Absent for others. */
+  page?: number;
+};
+
+export type GroundedClaim = {
+  claim: string;
+  sourceQuote: string;
+  /** Where the quote was verified — filled by the server, never the model. */
+  source?: SourceAttribution;
+};
+
+/** A document in the evidence corpus the model may quote from. */
+export type SourceDocument = {
+  sourceId: string;
+  source: string;
+  /** Verbatim text; every quote is checked against this. */
+  text: string;
+  /** For paginated documents: the page each character range belongs to. */
+  pages?: { start: number; end: number; page: number }[];
+};
 
 export type CriterionAnalysis = {
   evidence: GroundedClaim[];
@@ -54,6 +84,14 @@ export type CopilotOutput = {
   brief: ProjectBrief;
   criteria: Record<string, CriterionAnalysis>;
 };
+
+/** Provenance of a generated analysis, shown to the judge. */
+export type SourcesUsed = {
+  sourceId: string;
+  source: string;
+  chars: number;
+  pages?: number;
+}[];
 
 // ---------------------------------------------------------------------------
 // Provider identity
@@ -111,16 +149,17 @@ export const CHAT_SCHEMA = {
 
 export const CHAT_SYSTEM_PROMPT = `You are an analysis assistant supporting a human judge at a hackathon, answering questions about ONE submission.
 
-You answer from the submission text only. You do NOT judge.
+You answer from the provided evidence corpus only. You do NOT judge.
 
 ABSOLUTE RULES
 1. Never assign, suggest, imply or predict a score, grade, rank or winner.
-2. Never introduce a fact that is not in the submission text. You have not opened any attached files — only their names were provided.
-3. Every factual statement about the submission must be backed by a verbatim span in \`quotes\`, copied character-for-character (ignoring only line wrapping) from the submission text. If you cannot quote it, do not assert it.
-4. If the submission does not contain the answer, set \`notInSource\` to true, say so plainly in \`answer\`, and return an empty \`quotes\` array. Never guess.
-5. Describe; do not evaluate. State what the text says, not whether it is good.
+2. Never introduce a fact that is not in the evidence corpus. You have not opened anything beyond the documents provided.
+3. Every factual statement about the submission must be backed by a verbatim span in \`quotes\`, copied character-for-character (ignoring only line wrapping) from the corpus. If you cannot quote it, do not assert it.
+4. If the corpus does not contain the answer, set \`notInSource\` to true, say so plainly in \`answer\`, and return an empty \`quotes\` array. Never guess.
+5. Describe; do not evaluate. State what the evidence says, not whether it is good.
+6. Distinguish what the materials state from your own reading of them. When you interpret ("this implies…", "this suggests…"), say so explicitly and do not attach a quote to the interpretation itself.
 
-Write in plain, neutral language. Prefer the submission's own terminology over paraphrase.`;
+Write in plain, neutral language. Prefer the materials' own terminology over paraphrase.`;;
 
 // ---------------------------------------------------------------------------
 // Grounding
@@ -143,21 +182,80 @@ export function normalizeForGrounding(value: string): string {
 /** Minimum normalized length for a quote to count as evidence at all. */
 const MIN_QUOTE_LENGTH = 20;
 
-export function isGrounded(quote: string, sourceNormalized: string): boolean {
+/**
+ * The evidence corpus: every document the model was shown, each with its own
+ * normalized text. Verification is corpus-wide — a quote may come from the
+ * submission form, the GitHub README, the repo analyzer, or an uploaded file —
+ * and the document whose text contains the quote determines the claim's
+ * source attribution.
+ */
+export type EvidenceCorpus = {
+  documents: SourceDocument[];
+  /** Normalized text per document, aligned with `documents`. */
+  normalized: string[];
+  /** Flattened normalized text across all documents (fast first-pass check). */
+  combined: string;
+};
+
+/** Build the corpus once per generation; verified against for every claim. */
+export function buildCorpus(documents: SourceDocument[]): EvidenceCorpus {
+  return {
+    documents,
+    normalized: documents.map((d) => normalizeForGrounding(d.text)),
+    combined: documents.map((d) => normalizeForGrounding(d.text)).join(" "),
+  };
+}
+
+/**
+ * Resolve the source of a verified quote: which document contained it, and
+ * (for paginated documents) which page. The FIRST document containing the
+ * normalized quote wins; documents are ordered form-first so the submission
+ * text is preferred as the canonical source.
+ */
+export function resolveSource(
+  quote: string,
+  corpus: EvidenceCorpus,
+): SourceAttribution | undefined {
+  const normalized = normalizeForGrounding(quote);
+  for (let i = 0; i < corpus.documents.length; i += 1) {
+    if (!corpus.normalized[i].includes(normalized)) continue;
+    const doc = corpus.documents[i];
+    let page: number | undefined;
+    if (doc.pages && doc.pages.length > 0) {
+      // Character-level position in the ORIGINAL text maps to a page range.
+      const original = doc.text;
+      const probe = normalizeForGrounding(quote).slice(0, 40);
+      const idx = original.toLowerCase().indexOf(probe.toLowerCase());
+      const at = idx >= 0 ? idx : 0;
+      const match = doc.pages.find((p) => at >= p.start && at <= p.end);
+      page = match?.page;
+    }
+    return {
+      sourceId: doc.sourceId,
+      source: doc.source,
+      ...(page !== undefined ? { page } : {}),
+    };
+  }
+  return undefined;
+}
+
+export function isGroundedInCorpus(quote: string, corpus: EvidenceCorpus): boolean {
   const normalized = normalizeForGrounding(quote);
   if (normalized.length < MIN_QUOTE_LENGTH) return false;
-  return sourceNormalized.includes(normalized);
+  return corpus.combined.includes(normalized);
 }
 
 export type GroundingResult<T> = { verified: T[]; dropped: number };
 
 /**
- * Keeps only claims whose quote is genuinely present in the source.
- * Also caps each list so a verbose model cannot bury a judge in filler.
+ * Keeps only claims whose quote is genuinely present in SOME document of the
+ * corpus, and attaches the source (and page, when available) the quote was
+ * verified against. Also caps each list so a verbose model cannot bury a
+ * judge in filler.
  */
 export function groundClaims(
   items: unknown,
-  sourceNormalized: string,
+  corpus: EvidenceCorpus,
   limit = 6,
 ): GroundingResult<GroundedClaim> {
   const verified: GroundedClaim[] = [];
@@ -176,26 +274,32 @@ export function groundClaims(
       dropped += 1;
       continue;
     }
-    if (!isGrounded(sourceQuote, sourceNormalized)) {
+    if (!isGroundedInCorpus(sourceQuote, corpus)) {
       dropped += 1;
       continue;
     }
+    const trimmedQuote = sourceQuote.trim().slice(0, 600);
+    const source = resolveSource(trimmedQuote, corpus);
     verified.push({
       claim: claim.trim().slice(0, 600),
-      sourceQuote: sourceQuote.trim().slice(0, 600),
+      sourceQuote: trimmedQuote,
+      ...(source ? { source } : {}),
     });
   }
 
   return { verified, dropped };
 }
 
-/** Ground a chat answer's quotes the same way: verbatim or discarded. */
+/**
+ * Ground a chat answer's quotes the same way: verbatim in SOME corpus
+ * document or discarded, with source attribution (and page when available).
+ */
 export function groundQuotes(
   items: unknown,
-  sourceNormalized: string,
+  corpus: EvidenceCorpus,
   limit = 5,
-): { verified: string[]; dropped: number } {
-  const verified: string[] = [];
+): { verified: { quote: string; source: SourceAttribution }[]; dropped: number } {
+  const verified: { quote: string; source: SourceAttribution }[] = [];
   let dropped = 0;
 
   if (!Array.isArray(items)) return { verified, dropped: 0 };
@@ -206,11 +310,17 @@ export function groundQuotes(
       dropped += 1;
       continue;
     }
-    if (!isGrounded(raw, sourceNormalized)) {
+    if (!isGroundedInCorpus(raw, corpus)) {
       dropped += 1;
       continue;
     }
-    verified.push(raw.trim().slice(0, 600));
+    const trimmed = raw.trim().slice(0, 600);
+    const source = resolveSource(trimmed, corpus);
+    if (!source) {
+      dropped += 1;
+      continue;
+    }
+    verified.push({ quote: trimmed, source });
   }
 
   return { verified, dropped };
@@ -260,7 +370,7 @@ export function normalizeCriteriaOutput(raw: unknown): Record<string, unknown> {
 export function sanitizeCriteria(
   raw: unknown,
   criterionNames: string[],
-  sourceNormalized: string,
+  corpus: EvidenceCorpus,
 ): { criteria: Record<string, CriterionAnalysis>; dropped: number } {
   const source = normalizeCriteriaOutput(raw);
   const criteria: Record<string, CriterionAnalysis> = {};
@@ -268,9 +378,9 @@ export function sanitizeCriteria(
 
   for (const name of criterionNames) {
     const entry = (source[name] ?? {}) as Record<string, unknown>;
-    const evidence = groundClaims(entry.evidence, sourceNormalized, 6);
-    const strengths = groundClaims(entry.strengths, sourceNormalized, 4);
-    const concerns = groundClaims(entry.concerns, sourceNormalized, 4);
+    const evidence = groundClaims(entry.evidence, corpus, 6);
+    const strengths = groundClaims(entry.strengths, corpus, 4);
+    const concerns = groundClaims(entry.concerns, corpus, 4);
     dropped += evidence.dropped + strengths.dropped + concerns.dropped;
 
     criteria[name] = {
@@ -544,6 +654,74 @@ ABSOLUTE RULES
 5. Two to four sentences. Plain language. No bullet lists in the narrative.
 
 Write in plain, neutral language.`;
+
+// ---------------------------------------------------------------------------
+// PDF transcription (multimodal) — page-aware corpus input
+// ---------------------------------------------------------------------------
+
+/** A page-aware transcription of one uploaded PDF. */
+export type PdfTranscription = {
+  text: string;
+  /** Character ranges in `text` and the 1-based PDF page each covers. */
+  pages: { start: number; end: number; page: number }[];
+};
+
+export const PDF_TRANSCRIBE_SCHEMA = {
+  type: "object",
+  properties: {
+    pages: {
+      type: "array",
+      description: "One entry per page of the document, in order.",
+      items: {
+        type: "object",
+        properties: {
+          page: { type: "integer", description: "1-based page number." },
+          text: {
+            type: "string",
+            description:
+              "Verbatim transcription of that page. If the page is blank or unreadable, return an empty string.",
+          },
+        },
+        required: ["page", "text"],
+      },
+    },
+  },
+  required: ["pages"],
+} as const;
+
+export const PDF_TRANSCRIBE_PROMPT = `Transcribe the attached document for an analysis record.
+
+Return one entry per page with its 1-based page number and the VERBATIM text of that page.
+
+RULES
+- Transcribe only what is written. Do not summarize, correct, translate, or complete anything.
+- Preserve the original wording exactly; minor line-wrap changes are acceptable.
+- If a page is blank, an image with no readable text, or unreadable, return an empty string for that page.
+- Do not invent page numbers: one entry per actual page, in document order.`;
+
+/**
+ * A transcription response after server-side verification: each page's text
+ * is stored with the exact character range it occupies in the joined text.
+ */
+export function assembleTranscription(
+  raw: unknown,
+): PdfTranscription {
+  const pagesIn = (raw as { pages?: unknown })?.pages;
+  let text = "";
+  const pages: { start: number; end: number; page: number }[] = [];
+  if (Array.isArray(pagesIn)) {
+    for (const rawPage of pagesIn) {
+      const page = (rawPage ?? {}) as Record<string, unknown>;
+      const pageNo = typeof page.page === "number" ? Math.floor(page.page) : 0;
+      const content = typeof page.text === "string" ? page.text.trim() : "";
+      if (pageNo < 1 || !content) continue;
+      const start = text.length;
+      text += (text ? "\n\n" : "") + content;
+      pages.push({ start, end: text.length, page: pageNo });
+    }
+  }
+  return { text, pages };
+}
 
 export const SYSTEM_PROMPT = `You are an analysis assistant supporting human judges at a hackathon.
 
