@@ -4,21 +4,18 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
-// Status badges are flat colour blocks with an ink border — no pills, no
-// gradients, so state reads at a glance down a dense table column.
 const badgeVariants = cva(
-  "inline-flex items-center justify-center rounded-none border-2 border-ink px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none focus-visible:ring-[3px] focus-visible:ring-ring/40",
+  "inline-flex w-fit shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors [&>svg]:pointer-events-none [&>svg]:size-3 focus-visible:ring-[3px] focus-visible:ring-ring/25",
   {
     variants: {
       variant: {
-        default:
-          "bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
-        secondary:
-          "bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
-        destructive:
-          "bg-destructive text-white [a&]:hover:bg-destructive/90",
-        outline:
-          "bg-surface text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
+        default: "bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
+        secondary: "bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/70",
+        destructive: "bg-destructive text-white [a&]:hover:bg-destructive/90",
+        outline: "border border-border bg-card text-foreground [a&]:hover:bg-muted",
+        success: "bg-success-soft text-success-foreground",
+        warning: "bg-warning-soft text-warning-foreground",
+        info: "bg-info-soft text-info-foreground",
       },
     },
     defaultVariants: {
@@ -39,6 +36,7 @@ function Badge({
   return (
     <Comp
       data-slot="badge"
+      data-variant={variant}
       className={cn(badgeVariants({ variant }), className)}
       {...props}
     />

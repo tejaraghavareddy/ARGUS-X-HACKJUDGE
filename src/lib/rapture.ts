@@ -64,38 +64,39 @@ export type Tone = {
   className: string;
 };
 
-const NEUTRAL = "bg-surface text-ink";
-const YELLOW = "bg-[#ffe500] text-ink";
-const BLUE = "bg-[#2b6be4] text-white";
-const GREEN = "bg-[#1f9d55] text-white";
-const RED = "bg-[#d8382a] text-white";
-const GREY = "bg-[#c9c9c1] text-ink";
+// Status colour is drawn from the semantic tokens in index.css so a state looks
+// identical everywhere it appears — badge, banner, or chart legend.
+const NEUTRAL = "bg-muted text-muted-foreground";
+const INFO = "bg-info-soft text-info-foreground";
+const WARN = "bg-warning-soft text-warning-foreground";
+const OK = "bg-success-soft text-success-foreground";
+const BAD = "bg-danger-soft text-danger-foreground";
 
 export const ASSIGNMENT_TONE: Record<string, Tone> = {
   not_started: { label: "Not started", className: NEUTRAL },
-  in_progress: { label: "In progress", className: YELLOW },
-  submitted: { label: "Submitted", className: GREEN },
+  in_progress: { label: "In progress", className: WARN },
+  submitted: { label: "Submitted", className: OK },
 };
 
 export const SUBMISSION_TONE: Record<string, Tone> = {
-  draft: { label: "Draft", className: GREY },
-  submitted: { label: "Submitted", className: BLUE },
-  under_review: { label: "Under review", className: YELLOW },
-  scored: { label: "Scored", className: GREEN },
+  draft: { label: "Draft", className: NEUTRAL },
+  submitted: { label: "Submitted", className: INFO },
+  under_review: { label: "Under review", className: WARN },
+  scored: { label: "Scored", className: OK },
 };
 
 export const HACKATHON_TONE: Record<string, Tone> = {
   registration: { label: "Registration", className: NEUTRAL },
-  build: { label: "Build phase", className: BLUE },
-  submissions_closed: { label: "Submissions closed", className: YELLOW },
-  judging: { label: "Judging", className: YELLOW },
-  results: { label: "Results", className: GREEN },
+  build: { label: "Build phase", className: INFO },
+  submissions_closed: { label: "Submissions closed", className: WARN },
+  judging: { label: "Judging", className: WARN },
+  results: { label: "Results", className: OK },
 };
 
 export const RECOMMENDATION_TONE: Record<string, Tone> = {
-  advance: { label: "Advance", className: GREEN },
-  hold: { label: "Hold", className: YELLOW },
-  reject: { label: "Do not advance", className: RED },
+  advance: { label: "Advance", className: OK },
+  hold: { label: "Hold", className: WARN },
+  reject: { label: "Do not advance", className: BAD },
 };
 
 export function formatDate(value: number | null | undefined): string {

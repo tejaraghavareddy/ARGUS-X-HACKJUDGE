@@ -40,67 +40,86 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  /* Neobrutalism accent blocks, used for flat colour coding by track/role. */
-  --color-ink: var(--ink);
-  --color-surface: var(--surface);
+
+  /* Semantic layers. Every state in the product is one of these, which is what
+     keeps status colour consistent across badges, banners and charts. */
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-foreground: var(--info-foreground);
+
+  --shadow-elevated: var(--elevated);
+  --shadow-overlay: var(--overlay);
 }
 
 /* CHANGE VALUES FOR THEME */
 :root {
-  --radius: 0.5rem;
+  --radius: 0.625rem;
 
-  /* Neobrutalism Minimalism: one ink colour does all the outlining, every
-     surface is flat, and colour is only ever used to block, never to blend. */
-  --ink: #111111;
-  --surface: #ffffff;
-
-  --background: #f2f2ec;
-  --foreground: #111111;
+  /* Warm neutral canvas with a deep teal brand. Institutional rather than
+     startup-y: it has to look credible on a projector in a judging room. */
+  --background: #f6f6f3;
+  --foreground: #16181d;
   --card: #ffffff;
-  --card-foreground: #111111;
+  --card-foreground: #16181d;
   --popover: #ffffff;
-  --popover-foreground: #111111;
-  --primary: #111111;
+  --popover-foreground: #16181d;
+  --primary: #0d5c55;
   --primary-foreground: #ffffff;
-  --secondary: #e6e6de;
-  --secondary-foreground: #111111;
-  --muted: #e6e6de;
-  --muted-foreground: #4f4f47;
-  --accent: #ffe500;
-  --accent-foreground: #111111;
-  --destructive: #d8382a;
-  /* Borders are the structure of the whole design, so they are full-strength
-     ink rather than a soft hairline. */
-  --border: #111111;
-  --input: #111111;
-  --ring: #111111;
-  --chart-1: #ffe500;
-  --chart-2: #2b6be4;
-  --chart-3: #1f9d55;
-  --chart-4: #d8382a;
-  --chart-5: #7b3fe4;
+  --secondary: #eceef0;
+  --secondary-foreground: #16181d;
+  --muted: #f0f1f2;
+  --muted-foreground: #5b6270;
+  --accent: #e7efed;
+  --accent-foreground: #0b4741;
+  --destructive: #b4342a;
+
+  /* Hairlines carry the structure; borders are quiet so the data leads. */
+  --border: #e2e3e7;
+  --input: #d3d5da;
+  --ring: #0d5c55;
+
+  --success: #15803d;
+  --success-soft: #e6f3ea;
+  --success-foreground: #14622f;
+  --warning: #b45309;
+  --warning-soft: #fdf1dc;
+  --warning-foreground: #8a4207;
+  --info: #2f5bd0;
+  --info-soft: #e9effc;
+  --info-foreground: #26479f;
+  --danger-soft: #fbe9e7;
+  --danger-foreground: #93271e;
+
+  /* Categorical series, ordered for maximum separation at small sizes. */
+  --chart-1: #0d5c55;
+  --chart-2: #c2410c;
+  --chart-3: #3f5bd9;
+  --chart-4: #a16207;
+  --chart-5: #7c3aed;
+
   --sidebar: #ffffff;
-  --sidebar-foreground: #111111;
-  --sidebar-primary: #111111;
+  --sidebar-foreground: #16181d;
+  --sidebar-primary: #0d5c55;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #ffe500;
-  --sidebar-accent-foreground: #111111;
-  --sidebar-border: #111111;
-  --sidebar-ring: #111111;
+  --sidebar-accent: #e7efed;
+  --sidebar-accent-foreground: #0b4741;
+  --sidebar-border: #e2e3e7;
+  --sidebar-ring: #0d5c55;
 
-  /* Hard offset shadow: no blur, no spread. The single depth cue in the app. */
-  --nb-shadow: 4px 4px 0 0 var(--ink);
-  --nb-shadow-sm: 2px 2px 0 0 var(--ink);
-  --nb-shadow-lg: 6px 6px 0 0 var(--ink);
-}
-
-/* Square corners are the one non-negotiable of the theme: every `rounded-*`
-   utility in the shadcn primitives resolves through this scale. */
-:root {
-  --radius-sm: 0px;
-  --radius-md: 0px;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
+  /* Elevation is a low-contrast layered shadow, never a hard offset. */
+  --elevated:
+    0 1px 2px -1px rgb(16 24 40 / 0.06), 0 1px 3px 0 rgb(16 24 40 / 0.05);
+  --overlay:
+    0 4px 6px -2px rgb(16 24 40 / 0.05), 0 12px 24px -6px rgb(16 24 40 / 0.12);
+  --focus-ring: 0 0 0 3px rgb(13 92 85 / 0.22);
 }
 
 @layer base {
@@ -113,48 +132,105 @@
       ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
       "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.021em;
   }
   button:not([disabled]),
   [role="button"]:not([disabled]) {
     cursor: pointer;
   }
-  /* Numerals line up in tables and stat tiles. */
+  /* Numerals line up across tables, stat tiles and score fields. */
   .tabular {
     font-variant-numeric: tabular-nums;
   }
 }
 
 @layer components {
-  /* The three surfaces the whole app is built from. */
-  .nb-card {
-    border: 2px solid var(--ink);
-    box-shadow: var(--nb-shadow);
-    background: var(--surface);
+  /* ---- Surfaces ------------------------------------------------------- */
+  .surface-card {
+    @apply rounded-lg border border-border bg-card;
+    box-shadow: var(--elevated);
   }
-  .nb-flat {
-    /* Flat block with no shadow, for dense table chrome and side panels. */
-    border: 2px solid var(--ink);
-    background: var(--surface);
+  .surface-flat {
+    @apply rounded-lg border border-border bg-card;
   }
-  .nb-inset {
-    border: 2px solid var(--ink);
-    background: #e6e6de;
+  .surface-inset {
+    @apply rounded-md border border-border bg-muted;
+  }
+  .surface-accent {
+    @apply rounded-md border border-info/25 bg-info-soft;
   }
 
-  /* Buttons translate onto their own shadow when pressed — the only motion
-     in the app, and it reads as physical rather than decorative. */
-  .nb-press {
-    box-shadow: var(--nb-shadow);
-    transition:
-      transform 80ms ease,
-      box-shadow 80ms ease;
+  /* ---- Actions -------------------------------------------------------- */
+  /* Shared geometry so raw links and buttons match the Button component. */
+  .btn-base {
+    @apply inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors select-none;
+    @apply disabled:pointer-events-none disabled:opacity-50;
+    height: 2.25rem;
+    padding-inline: 0.875rem;
   }
-  .nb-press:hover:not(:disabled) {
-    transform: translate(-2px, -2px);
-    box-shadow: 6px 6px 0 0 var(--ink);
+  .btn-base > svg {
+    @apply size-4 shrink-0;
   }
-  .nb-press:active:not(:disabled) {
-    transform: translate(2px, 2px);
-    box-shadow: 0 0 0 0 var(--ink);
+  .btn-sm {
+    height: 1.875rem;
+    padding-inline: 0.625rem;
+    @apply text-xs;
+  }
+  .btn-lg {
+    height: 2.75rem;
+    padding-inline: 1.25rem;
+    @apply text-[0.9375rem];
+  }
+  .btn-primary {
+    @apply bg-primary text-primary-foreground hover:bg-primary/90;
+  }
+  .btn-outline {
+    @apply border border-input bg-card text-foreground hover:bg-muted;
+  }
+  .btn-ghost {
+    @apply text-muted-foreground hover:bg-muted hover:text-foreground;
+  }
+  .btn-accent {
+    @apply bg-accent text-accent-foreground hover:bg-accent/70;
+  }
+  .btn-danger {
+    @apply bg-destructive text-white hover:bg-destructive/90;
+  }
+
+  /* ---- Data tables ---------------------------------------------------- */
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+  .data-table thead th {
+    @apply border-b border-border px-3 py-2.5 text-left align-middle text-[0.6875rem] font-semibold tracking-wide text-muted-foreground uppercase;
+  }
+  .data-table tbody td {
+    @apply border-b border-border/70 px-3 py-3 align-middle;
+  }
+  .data-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+  .data-table tbody tr {
+    @apply transition-colors hover:bg-muted/60;
+  }
+  .data-table caption {
+    @apply mt-4 text-xs text-muted-foreground;
+  }
+
+  /* ---- Small status pill ---------------------------------------------- */
+  .status-pill {
+    @apply inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap;
+  }
+}
+
+@layer utilities {
+  .shadow-overlay {
+    box-shadow: var(--overlay);
   }
 }

@@ -2,7 +2,7 @@ import { useSession } from "@/hooks/use-session";
 import { ROLE_HOME, ROLE_LABEL, type AppRole } from "@/lib/rapture";
 import { Link } from "react-router";
 import type { ReactNode } from "react";
-import { ShieldAlert } from "lucide-react";
+import { ShieldAlert, Loader2 } from "lucide-react";
 
 /**
  * Blocks a route unless the signed-in user holds one of `allow`.
@@ -24,7 +24,8 @@ export function RequireRole({
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <div className="nb-inset px-6 py-4 text-sm font-semibold uppercase tracking-widest">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
           Checking access…
         </div>
       </div>
@@ -35,15 +36,14 @@ export function RequireRole({
   if (!user) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-6">
-        <div className="nb-card w-full max-w-md p-8">
-          <h1 className="text-2xl font-bold tracking-tight">Sign in required</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
+        <div className="surface-card w-full max-w-md p-7">
+          <h1 className="text-xl font-semibold tracking-[-0.021em]">
+            Sign in required
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
             You need to be signed in to open this area.
           </p>
-          <Link
-            to="/auth"
-            className="nb-press mt-6 inline-flex h-10 items-center border-2 border-ink bg-primary px-5 text-sm font-semibold uppercase tracking-wide text-primary-foreground"
-          >
+          <Link to="/auth" className="btn-base btn-primary mt-6">
             Go to sign in
           </Link>
         </div>
@@ -56,9 +56,11 @@ export function RequireRole({
   if (!role) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-6">
-        <div className="nb-card w-full max-w-md p-8">
-          <h1 className="text-2xl font-bold tracking-tight">No role assigned</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
+        <div className="surface-card w-full max-w-md p-7">
+          <h1 className="text-xl font-semibold tracking-[-0.021em]">
+            No role assigned
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
             {user.email} is signed in, but has not been granted an admin, judge
             or participant role for this hackathon yet. Ask an organizer to
             assign one.
@@ -73,22 +75,18 @@ export function RequireRole({
   if (!allow.includes(role)) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-6">
-        <div className="nb-card w-full max-w-md p-8">
-          <div className="flex size-12 items-center justify-center border-2 border-ink bg-[#d8382a] text-white">
-            <ShieldAlert className="size-6" />
+        <div className="surface-card w-full max-w-md p-7">
+          <div className="flex size-10 items-center justify-center rounded-md bg-danger-soft text-danger-foreground">
+            <ShieldAlert className="size-5" />
           </div>
-          <h1 className="mt-5 text-2xl font-bold tracking-tight">
+          <h1 className="mt-5 text-xl font-semibold tracking-[-0.021em]">
             Not available to your role
           </h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            This area is for{" "}
-            {allow.map((r) => ROLE_LABEL[r]).join(" or ")} accounts. You are
-            signed in as a {ROLE_LABEL[role]}.
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            This area is for {allow.map((r) => ROLE_LABEL[r]).join(" or ")}{" "}
+            accounts. You are signed in as a {ROLE_LABEL[role]}.
           </p>
-          <Link
-            to={ROLE_HOME[role]}
-            className="nb-press mt-6 inline-flex h-10 items-center border-2 border-ink bg-primary px-5 text-sm font-semibold uppercase tracking-wide text-primary-foreground"
-          >
+          <Link to={ROLE_HOME[role]} className="btn-base btn-primary mt-6">
             Go to my dashboard
           </Link>
         </div>

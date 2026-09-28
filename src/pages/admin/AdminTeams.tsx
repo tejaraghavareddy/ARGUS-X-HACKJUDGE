@@ -17,7 +17,7 @@ export default function AdminTeams() {
   if (teams === undefined) {
     return (
       <AppShell role="admin">
-        <div className="nb-inset px-6 py-10 text-center text-sm font-semibold uppercase tracking-widest">
+        <div className="surface-inset px-6 py-14 text-center text-sm text-muted-foreground">
           Loading teams…
         </div>
       </AppShell>
@@ -41,36 +41,24 @@ export default function AdminTeams() {
             description="No teams have registered for this hackathon yet."
           />
         ) : (
-          <div className="-mx-2 overflow-x-auto">
-            <table className="w-full min-w-[900px] text-sm">
+          <div className="-mx-5 overflow-x-auto px-5">
+            <table className="data-table min-w-[860px]">
               <thead>
-                <tr className="border-b-2 border-ink text-left">
-                  {[
-                    "Team",
-                    "Track",
-                    "Submission",
-                    "Judges",
-                    "Average",
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      className="px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest"
-                    >
-                      {h}
-                    </th>
-                  ))}
+                <tr>
+                  <th className="w-[30%]">Team</th>
+                  <th>Track</th>
+                  <th>Submission</th>
+                  <th className="w-48">Judging</th>
+                  <th className="text-right">Average</th>
                 </tr>
               </thead>
               <tbody>
                 {teams.map((team) => (
-                  <tr
-                    key={team.id}
-                    className="border-b border-ink/20 align-middle last:border-b-0 hover:bg-accent/40"
-                  >
-                    <td className="px-3 py-3">
+                  <tr key={team.id}>
+                    <td>
                       <Link
                         to={`/admin/teams/${team.id}`}
-                        className="font-bold hover:underline"
+                        className="font-medium hover:underline"
                       >
                         {team.projectName}
                       </Link>
@@ -78,12 +66,10 @@ export default function AdminTeams() {
                         {team.name} · {formatDate(team.submittedAt)}
                       </span>
                     </td>
-                    <td className="px-3 py-3">
-                      <span className="border-2 border-ink bg-surface px-1.5 py-0.5 text-[11px] font-bold uppercase tracking-wider">
-                        {team.trackName}
-                      </span>
+                    <td className="text-sm text-muted-foreground">
+                      {team.trackName}
                     </td>
-                    <td className="px-3 py-3">
+                    <td>
                       {team.submissionStatus ? (
                         <StatusBadge
                           tone={
@@ -95,16 +81,14 @@ export default function AdminTeams() {
                         <span className="text-xs text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-3">
-                      <div className="w-40">
-                        <BlockProgress
-                          done={team.completedJudges}
-                          total={team.assignedJudges}
-                          label="Scored"
-                        />
-                      </div>
+                    <td>
+                      <BlockProgress
+                        done={team.completedJudges}
+                        total={team.assignedJudges}
+                        label="Scored"
+                      />
                     </td>
-                    <td className="tabular px-3 py-3 text-base font-black">
+                    <td className="tabular text-right text-base font-semibold">
                       {team.averageScore ?? "—"}
                     </td>
                   </tr>

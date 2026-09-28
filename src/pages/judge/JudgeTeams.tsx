@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useQuery } from "convex/react";
+import { ArrowUpDown, CheckCircle2, CircleDashed, PenLine } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/app/AppShell";
 import {
@@ -16,7 +17,13 @@ import {
   SUBMISSION_TONE,
   formatRelativeDue,
 } from "@/lib/rapture";
-import { ArrowUpDown, CheckCircle2, CircleDashed, PenLine } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+const FILTERS = [
+  { key: "all", label: "All" },
+  { key: "todo", label: "Outstanding" },
+  { key: "done", label: "Submitted" },
+] as const;
 
 /**
  * The judge's main screen: every team assigned to them, in one table.
@@ -28,7 +35,7 @@ import { ArrowUpDown, CheckCircle2, CircleDashed, PenLine } from "lucide-react";
  */
 export default function JudgeTeams() {
   const data = useQuery(api.judging.myAssignments);
-  const [filter, setFilter] = useState<"all" | "todo" | "done">("all");
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");
   const [sortByName, setSortByName] = useState(false);
 
   const rows = useMemo(() => {
@@ -46,9 +53,7 @@ export default function JudgeTeams() {
   if (data === undefined) {
     return (
       <AppShell role="judge">
-        <div className="nb-inset px-6 py-10 text-center text-sm font-semibold uppercase tracking-widest">
-          Loading your assignments…
-        </div>
+        <Loading label="Loading your assignments…" />
       </AppShell>
     );
   }
@@ -63,8 +68,8 @@ export default function JudgeTeams() {
       />
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Assigned" value={summary.total} tone="ink" />
-        <StatTile label="Submitted" value={summary.submitted} tone="surface" />
+        <StatTile label="Assigned" value={summary.total} tone="primary" />
+        <StatTile label="Submitted" value={summary.submitted} />
         <StatTile label="In progress" value={summary.inProgress} />
         <StatTile label="Not started" value={summary.notStarted} />
       </div>
@@ -73,23 +78,27 @@ export default function JudgeTeams() {
         title="Review queue"
         description="Open a team to read their submission and complete your scorecard."
         actions={
-          <div className="flex flex-wrap gap-2">
-            {(["all", "todo", "done"] as const).map((key) => (
+          <div className="flex rounded-md border border-input bg-card p-0.5">
+            {FILTERS.map((option) => (
               <button
-                key={key}
+                key={option.key}
                 type="button"
-                onClick={() => setFilter(key)}
-                className={`border-2 border-ink px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
-                  filter === key ? "bg-ink text-white" : "bg-surface hover:bg-accent"
-                }`}
+                onClick={() => setFilter(option.key)}
+                aria-pressed={filter === option.key}
+                className={cn(
+                  "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                  filter === option.key
+                    ? "bg-secondary text-secondary-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
               >
-                {key === "all" ? "All" : key === "todo" ? "Outstanding" : "Submitted"}
+                {option.label}
               </button>
             ))}
           </div>
         }
       >
-        <div className="mb-5">
+        <div className="mb-5 max-w-md">
           <BlockProgress
             done={summary.submitted}
             total={summary.total}
@@ -99,7 +108,7 @@ export default function JudgeTeams() {
 
         {rows.length === 0 ? (
           <EmptyState
-            title="Nothing here"
+            title="Nothing to show"
             description={
               summary.total === 0
                 ? "You have not been assigned any teams for this round yet."
@@ -107,35 +116,25 @@ export default function JudgeTeams() {
             }
           />
         ) : (
-          <div className="-mx-2 overflow-x-auto">
-            <table className="w-full min-w-[900px] border-collapse text-sm">
+          <div className="-mx-5 overflow-x-auto px-5">
+            <table className="data-table min-w-[860px]">
               <thead>
-                <tr className="border-b-2 border-ink text-left">
-                  <th className="px-3 py-2.5">
+                <tr>
+                  <th className="w-[26%]">
                     <button
                       type="button"
                       onClick={() => setSortByName((v) => !v)}
-                      className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest hover:text-muted-foreground"
+                      className="flex items-center gap-1.5 transition-colors hover:text-foreground"
                     >
                       Team
                       <ArrowUpDown className="size-3" />
                     </button>
                   </th>
-                  <th className="px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest">
-                    Track
-                  </th>
-                  <th className="px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest">
-                    Submission
-                  </th>
-                  <th className="px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest">
-                    Your progress
-                  </th>
-                  <th className="px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest">
-                    Due
-                  </th>
-                  <th className="px-3 py-2.5 text-right text-[11px] font-bold uppercase tracking-widest">
-                    Action
-                  </th>
+                  <th>Track</th>
+                  <th>Submission</th>
+                  <th>Your progress</th>
+                  <th>Due</th>
+                  <th className="text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -147,49 +146,53 @@ export default function JudgeTeams() {
                     : null;
 
                   return (
-                    <tr
-                      key={row.assignmentId}
-                      className="border-b border-ink/20 align-middle last:border-b-0 hover:bg-accent/40"
-                    >
-                      <td className="px-3 py-3">
-                        <p className="font-bold leading-tight">{row.teamName}</p>
+                    <tr key={row.assignmentId}>
+                      <td>
+                        <p className="font-medium leading-tight">{row.teamName}</p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
                           {row.projectName}
                         </p>
                       </td>
-                      <td className="px-3 py-3">
-                        <span className="border-2 border-ink bg-surface px-1.5 py-0.5 text-[11px] font-bold uppercase tracking-wider">
+                      <td>
+                        <span className="text-sm text-muted-foreground">
                           {row.trackName}
                         </span>
                       </td>
-                      <td className="px-3 py-3">
+                      <td>
                         {submissionTone ? (
                           <StatusBadge tone={submissionTone} />
                         ) : (
-                          <span className="text-xs text-muted-foreground">
-                            —
-                          </span>
+                          <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </td>
-                      <td className="px-3 py-3">
+                      <td>
                         <div className="flex items-center gap-2">
                           <StatusBadge tone={assignmentTone} />
                           {row.isFinal ? (
-                            <CheckCircle2 className="size-4 text-[#1f9d55]" />
+                            <CheckCircle2
+                              className="size-4 text-success"
+                              aria-label="Scorecard locked"
+                            />
                           ) : row.hasScore ? (
-                            <PenLine className="size-4 text-[#f08c00]" />
+                            <PenLine
+                              className="size-4 text-warning"
+                              aria-label="Draft in progress"
+                            />
                           ) : (
-                            <CircleDashed className="size-4 text-muted-foreground" />
+                            <CircleDashed
+                              className="size-4 text-muted-foreground"
+                              aria-label="Not started"
+                            />
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-xs font-semibold text-muted-foreground">
+                      <td className="text-xs text-muted-foreground">
                         {formatRelativeDue(row.dueAt)}
                       </td>
-                      <td className="px-3 py-3 text-right">
+                      <td className="text-right">
                         <Link
                           to={`/judge/teams/${row.teamId}`}
-                          className="nb-press inline-flex h-8 items-center border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
+                          className="btn-base btn-outline btn-sm"
                         >
                           {row.isFinal ? "View" : "Review"}
                         </Link>
@@ -202,11 +205,19 @@ export default function JudgeTeams() {
           </div>
         )}
 
-        <p className="mt-5 border-t-2 border-ink pt-4 text-[11px] leading-snug text-muted-foreground">
+        <p className="mt-5 border-t border-border pt-4 text-xs leading-relaxed text-muted-foreground">
           Once you submit a scorecard it is locked and cannot be edited. Other
           judges' scores for the same team are never shown to you.
         </p>
       </SectionCard>
     </AppShell>
+  );
+}
+
+function Loading({ label }: { label: string }) {
+  return (
+    <div className="surface-inset px-6 py-14 text-center text-sm text-muted-foreground">
+      {label}
+    </div>
   );
 }

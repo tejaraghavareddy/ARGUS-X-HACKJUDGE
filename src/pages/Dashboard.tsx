@@ -1,6 +1,7 @@
 import { useSession } from "@/hooks/use-session";
 import { ROLE_HOME } from "@/lib/rapture";
 import { Navigate, useLocation } from "react-router";
+import { Loader2 } from "lucide-react";
 
 /**
  * Entry point for any signed-in user.
@@ -15,7 +16,8 @@ export default function Dashboard() {
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <div className="nb-inset px-6 py-4 text-sm font-semibold uppercase tracking-widest">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
           Loading…
         </div>
       </div>

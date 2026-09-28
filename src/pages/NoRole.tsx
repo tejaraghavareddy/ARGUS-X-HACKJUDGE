@@ -11,16 +11,16 @@ export default function NoRole() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
-      <div className="nb-card w-full max-w-lg p-8">
-        <div className="flex size-12 items-center justify-center border-2 border-ink bg-[#ffe500]">
-          <ShieldQuestion className="size-6" />
+      <div className="surface-card w-full max-w-lg p-7">
+        <div className="flex size-10 items-center justify-center rounded-md bg-warning-soft text-warning-foreground">
+          <ShieldQuestion className="size-5" />
         </div>
-        <h1 className="mt-5 text-2xl font-black tracking-tight">
+        <h1 className="mt-5 text-xl font-semibold tracking-[-0.021em]">
           No role assigned yet
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
           You are signed in as{" "}
-          <span className="font-semibold text-ink">{user?.email}</span>, but
+          <span className="font-medium text-foreground">{user?.email}</span>, but
           you have not been added as an admin, judge or participant for this
           hackathon. Ask an organizer to grant your role, then sign in again.
         </p>
@@ -28,14 +28,11 @@ export default function NoRole() {
           <button
             type="button"
             onClick={() => void signOut()}
-            className="nb-press h-10 border-2 border-ink bg-surface px-4 text-sm font-semibold uppercase tracking-wide"
+            className="btn-base btn-outline"
           >
             Sign out
           </button>
-          <Link
-            to="/"
-            className="nb-press inline-flex h-10 items-center border-2 border-ink bg-primary px-4 text-sm font-semibold uppercase tracking-wide text-primary-foreground"
-          >
+          <Link to="/" className="btn-base btn-primary">
             Home
           </Link>
         </div>

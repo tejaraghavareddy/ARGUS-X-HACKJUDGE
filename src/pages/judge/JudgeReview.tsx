@@ -1,24 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { useMutation, useQuery } from "convex/react";
-import { ArrowLeft, ExternalLink, Lock, Save } from "lucide-react";
+import { ArrowLeft, ExternalLink, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { AppShell } from "@/components/app/AppShell";
-import {
-  PageHeader,
-  SectionCard,
-  StatusBadge,
-} from "@/components/app/Primitives";
+import { PageHeader, SectionCard, StatusBadge } from "@/components/app/Primitives";
 import { AdvisoryPanel } from "@/components/app/AdvisoryPanel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  SUBMISSION_TONE,
-  formatDate,
-  formatRelativeDue,
-} from "@/lib/rapture";
+import { SUBMISSION_TONE, formatDate, formatRelativeDue } from "@/lib/rapture";
 import { cn } from "@/lib/utils";
 
 const RECOMMENDATIONS = [
@@ -30,8 +22,8 @@ const RECOMMENDATIONS = [
 export default function JudgeReview() {
   const { teamId } = useParams<{ teamId: string }>();
   // The route param is a string; Convex ids are branded, so narrow it once
-  // here. An invalid id simply fails to resolve and the query returns an
-  // error, which the server-side assignment check also guards.
+  // here. An invalid id fails to resolve, and the server-side assignment check
+  // independently guards the read.
   const team = teamId ? (teamId as Id<"teams">) : null;
   const data = useQuery(api.judging.reviewDetail, team ? { teamId: team } : "skip");
   const saveScore = useMutation(api.judging.saveScore);
@@ -55,7 +47,7 @@ export default function JudgeReview() {
   if (data === undefined) {
     return (
       <AppShell role="judge">
-        <div className="nb-inset px-6 py-10 text-center text-sm font-semibold uppercase tracking-widest">
+        <div className="surface-inset px-6 py-14 text-center text-sm text-muted-foreground">
           Loading team…
         </div>
       </AppShell>
@@ -65,15 +57,12 @@ export default function JudgeReview() {
   if (!data.team) {
     return (
       <AppShell role="judge">
-        <div className="nb-card p-8">
-          <h1 className="text-xl font-black">Team not found</h1>
+        <div className="surface-card p-7">
+          <h1 className="text-xl font-semibold">Team not found</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             This team is no longer available to you.
           </p>
-          <Link
-            to="/judge"
-            className="nb-press mt-5 inline-flex h-10 items-center border-2 border-ink bg-primary px-4 text-sm font-semibold uppercase tracking-wide text-primary-foreground"
-          >
+          <Link to="/judge" className="btn-base btn-primary mt-5">
             Back to my teams
           </Link>
         </div>
@@ -126,7 +115,7 @@ export default function JudgeReview() {
     <AppShell role="judge">
       <Link
         to="/judge"
-        className="mb-4 inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest hover:underline"
+        className="mb-4 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft className="size-3.5" />
         All my teams
@@ -134,7 +123,7 @@ export default function JudgeReview() {
 
       <PageHeader
         title={data.team.projectName}
-        description={`${data.team.name} · ${data.team.tagline}`}
+        description={`${data.team.name} — ${data.team.tagline}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {data.submission && (
@@ -145,7 +134,7 @@ export default function JudgeReview() {
                 }
               />
             )}
-            <span className="border-2 border-ink bg-surface px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider">
+            <span className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
               {formatRelativeDue(data.assignment.dueAt)}
             </span>
           </div>
@@ -153,32 +142,39 @@ export default function JudgeReview() {
       />
 
       <div className="grid gap-5 lg:grid-cols-[1.35fr_1fr] lg:items-start">
-        {/* Left: everything the judge needs to form a view. */}
+        {/* Left: everything needed to form a view. */}
         <div className="space-y-5">
           <SectionCard title="Submission">
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-1.5">
               {data.team.techStack.map((tech) => (
                 <span
                   key={tech}
-                  className="border-2 border-ink bg-surface px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider"
+                  className="rounded-md bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground"
                 >
                   {tech}
                 </span>
               ))}
             </div>
+
             <p className="mt-4 text-sm leading-relaxed">
               {data.submission?.abstract}
             </p>
 
             {data.submission?.highlights.length ? (
               <div className="mt-5">
-                <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                <p className="text-xs font-semibold text-muted-foreground">
                   Team highlights
                 </p>
                 <ul className="mt-2 space-y-1.5">
                   {data.submission.highlights.map((item) => (
-                    <li key={item} className="flex gap-2 text-sm">
-                      <span aria-hidden className="font-black">
+                    <li
+                      key={item}
+                      className="flex gap-2.5 text-sm leading-relaxed"
+                    >
+                      <span
+                        aria-hidden
+                        className="font-medium text-primary"
+                      >
                         →
                       </span>
                       {item}
@@ -188,15 +184,15 @@ export default function JudgeReview() {
               </div>
             ) : null}
 
-            <div className="mt-5 flex flex-wrap gap-2 border-t-2 border-ink pt-4">
+            <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4">
               {data.team.demoUrl && (
                 <a
                   href={data.team.demoUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="nb-press inline-flex h-9 items-center gap-2 border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
+                  className="btn-base btn-outline btn-sm"
                 >
-                  Live demo <ExternalLink className="size-3.5" />
+                  Live demo <ExternalLink />
                 </a>
               )}
               {data.team.repoUrl && (
@@ -204,9 +200,9 @@ export default function JudgeReview() {
                   href={data.team.repoUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="nb-press inline-flex h-9 items-center gap-2 border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
+                  className="btn-base btn-outline btn-sm"
                 >
-                  Repository <ExternalLink className="size-3.5" />
+                  Repository <ExternalLink />
                 </a>
               )}
               {data.submission?.videoUrl && (
@@ -214,9 +210,9 @@ export default function JudgeReview() {
                   href={data.submission.videoUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="nb-press inline-flex h-9 items-center gap-2 border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
+                  className="btn-base btn-outline btn-sm"
                 >
-                  Demo video <ExternalLink className="size-3.5" />
+                  Demo video <ExternalLink />
                 </a>
               )}
             </div>
@@ -225,15 +221,19 @@ export default function JudgeReview() {
           <AdvisoryPanel review={data.submission?.aiReview} audience="judge" />
 
           <SectionCard title="Team members">
-            <ul className="space-y-2">
+            <ul className="divide-y divide-border">
               {data.members.map((member) => (
                 <li
                   key={member.name}
-                  className="flex items-center justify-between border-2 border-ink bg-surface px-3 py-2"
+                  className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
                 >
-                  <span className="text-sm font-semibold">{member.name}</span>
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                    {member.isLead ? "Lead · " : ""}
+                  <span className="text-sm font-medium">{member.name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {member.isLead && (
+                      <span className="mr-1.5 font-medium text-foreground">
+                        Lead
+                      </span>
+                    )}
                     {member.role}
                   </span>
                 </li>
@@ -252,17 +252,18 @@ export default function JudgeReview() {
           }
           actions={
             isLocked ? (
-              <span className="flex items-center gap-1.5 border-2 border-ink bg-[#1f9d55] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white">
-                <Lock className="size-3" /> Locked
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-success-soft px-2 py-0.5 text-[0.6875rem] font-semibold text-success-foreground">
+                <Lock className="size-3" />
+                Locked
               </span>
             ) : null
           }
         >
           {isLocked && (
-            <p className="mb-4 border-2 border-ink bg-[#e6e6de] px-3 py-2 text-xs leading-snug">
-              You submitted this scorecard{" "}
-              {formatDate(data.myScore?.submittedAt)}. Submitted scorecards are
-              immutable — ask an admin if something needs correcting.
+            <p className="mb-4 rounded-md border border-border bg-muted px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+              You submitted this scorecard {formatDate(data.myScore?.submittedAt)}.
+              Submitted scorecards are immutable — ask an admin if something
+              needs correcting.
             </p>
           )}
 
@@ -272,72 +273,71 @@ export default function JudgeReview() {
               return (
                 <div key={criterion.name}>
                   <div className="flex items-baseline justify-between gap-3">
-                    <label
-                      htmlFor={`criterion-${criterion.name}`}
-                      className="text-sm font-bold"
-                    >
-                      {criterion.name}
-                    </label>
-                    <span className="tabular text-xs font-bold text-muted-foreground">
-                      {criterion.weight}% · {typeof value === "number" ? value : "–"}
-                      /{criterion.maxScore}
+                    <span className="text-sm font-medium">{criterion.name}</span>
+                    <span className="tabular text-xs text-muted-foreground">
+                      {criterion.weight}% weight ·{" "}
+                      <span className="font-medium text-foreground">
+                        {typeof value === "number" ? value : "–"}/
+                        {criterion.maxScore}
+                      </span>
                     </span>
                   </div>
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {criterion.description}
                   </p>
                   <div
-                    id={`criterion-${criterion.name}`}
-                    className="mt-2 flex gap-1.5"
+                    className="mt-2 flex flex-wrap gap-1.5"
+                    role="group"
+                    aria-label={`${criterion.name} score`}
                   >
-                    {Array.from({ length: criterion.maxScore }, (_, i) => i + 1).map(
-                      (point) => (
-                        <button
-                          key={point}
-                          type="button"
-                          disabled={isLocked}
-                          aria-label={`${criterion.name}: ${point} of ${criterion.maxScore}`}
-                          aria-pressed={value === point}
-                          onClick={() =>
-                            setBreakdown((prev) => ({
-                              ...prev,
-                              [criterion.name]: point,
-                            }))
-                          }
-                          className={cn(
-                            "tabular h-9 w-9 border-2 border-ink text-sm font-bold transition-none disabled:cursor-not-allowed",
-                            value === point
-                              ? "bg-ink text-white"
-                              : "bg-surface hover:bg-accent",
-                          )}
-                        >
-                          {point}
-                        </button>
-                      ),
-                    )}
+                    {Array.from(
+                      { length: criterion.maxScore },
+                      (_, i) => i + 1,
+                    ).map((point) => (
+                      <button
+                        key={point}
+                        type="button"
+                        disabled={isLocked}
+                        aria-label={`${criterion.name}: ${point} of ${criterion.maxScore}`}
+                        aria-pressed={value === point}
+                        onClick={() =>
+                          setBreakdown((prev) => ({
+                            ...prev,
+                            [criterion.name]: point,
+                          }))
+                        }
+                        className={cn(
+                          "tabular size-8 rounded-md border text-sm font-medium transition-colors disabled:cursor-not-allowed",
+                          value === point
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-input bg-card hover:border-primary/40 hover:bg-accent hover:text-accent-foreground",
+                        )}
+                      >
+                        {point}
+                      </button>
+                    ))}
                   </div>
                 </div>
               );
             })}
           </div>
 
-          <div className="mt-6 flex items-center justify-between border-2 border-ink bg-ink px-4 py-3 text-white">
-            <span className="text-[11px] font-bold uppercase tracking-widest">
+          <div className="mt-6 flex items-center justify-between rounded-lg bg-secondary px-4 py-3">
+            <span className="text-xs font-semibold text-secondary-foreground">
               Weighted total
             </span>
-            <span className="tabular text-2xl font-black">
+            <span className="tabular text-xl font-semibold text-foreground">
               {total.toFixed(1)}
-              <span className="text-sm font-bold opacity-60">/100</span>
+              <span className="text-sm font-medium text-muted-foreground">
+                /100
+              </span>
             </span>
           </div>
 
-          <div className="mt-5">
-            <label
-              htmlFor="recommendation"
-              className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground"
-            >
+          <fieldset className="mt-5">
+            <legend className="text-xs font-semibold text-muted-foreground">
               Recommendation
-            </label>
+            </legend>
             <div className="mt-2 grid gap-2 sm:grid-cols-3">
               {RECOMMENDATIONS.map((option) => (
                 <button
@@ -347,22 +347,22 @@ export default function JudgeReview() {
                   onClick={() => setRecommendation(option.value)}
                   aria-pressed={recommendation === option.value}
                   className={cn(
-                    "border-2 border-ink px-2 py-2 text-[11px] font-bold uppercase tracking-wider disabled:cursor-not-allowed",
+                    "rounded-md border px-2.5 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed",
                     recommendation === option.value
-                      ? "bg-[#ffe500] text-ink"
-                      : "bg-surface hover:bg-accent",
+                      ? "border-primary bg-accent text-accent-foreground"
+                      : "border-input bg-card text-muted-foreground hover:bg-muted",
                   )}
                 >
                   {option.label}
                 </button>
               ))}
             </div>
-          </div>
+          </fieldset>
 
           <div className="mt-5 space-y-1.5">
             <label
               htmlFor="comments"
-              className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground"
+              className="text-xs font-semibold text-muted-foreground"
             >
               Comments for the panel
             </label>
@@ -373,7 +373,6 @@ export default function JudgeReview() {
               disabled={isLocked}
               onChange={(e) => setComments(e.target.value)}
               placeholder="What convinced you, and what you could not verify."
-              className="rounded-none border-2 border-ink bg-surface"
             />
           </div>
 
@@ -385,8 +384,7 @@ export default function JudgeReview() {
                 disabled={saving !== null}
                 onClick={() => void handleSave(false)}
               >
-                <Save />
-                Save draft
+                {saving === "draft" ? "Saving…" : "Save draft"}
               </Button>
               <Button
                 className="flex-1"
@@ -398,7 +396,7 @@ export default function JudgeReview() {
             </div>
           )}
 
-          <p className="mt-4 text-[11px] leading-snug text-muted-foreground">
+          <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
             Submitting locks this scorecard permanently. The AI briefing above is
             read-only context and has no effect on any number on this form.
           </p>

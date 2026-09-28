@@ -1,4 +1,4 @@
-import { Bot, ShieldQuestion } from "lucide-react";
+import { Sparkles, ShieldQuestion } from "lucide-react";
 
 export type AiReview = {
   summary: string;
@@ -15,53 +15,56 @@ export type AiReview = {
  * This component is deliberately opinion-free: it renders analysis and stops.
  * It has no score, no score adjustment and no submit control, because the
  * product rule is that AI assists a human judge and never makes or alters the
- * judging decision. The banner states that in the UI so a judge always knows
- * what they are looking at and who owns the call.
+ * judging decision. The disclaimer states that in the UI so a judge always
+ * knows what they are looking at and who owns the call.
  */
 export function AdvisoryPanel({
   review,
   audience,
 }: {
   review: AiReview | null | undefined;
-  /** Shown so a judge and a participant read the same text with the right
-   *  framing. */
+  /** Framed for whoever is reading, so a judge and a participant each get the
+   *  framing that is accurate for them. */
   audience: "judge" | "participant";
 }) {
   if (!review) return null;
 
   return (
-    <section className="nb-flat bg-[#eef1f7]">
-      <header className="flex items-center justify-between gap-3 border-b-2 border-ink bg-[#2b6be4] px-4 py-2.5 text-white">
-        <span className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
-          <Bot className="size-4" />
+    <section className="surface-card overflow-hidden">
+      <header className="flex items-center justify-between gap-3 border-b border-border bg-info-soft px-4 py-2.5">
+        <span className="flex items-center gap-2 text-xs font-semibold text-info-foreground">
+          <Sparkles className="size-3.5" />
           AI briefing
         </span>
-        <span className="border-2 border-white px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider">
+        <span className="rounded-full bg-card px-2 py-0.5 text-[0.6875rem] font-semibold text-muted-foreground">
           Advisory only
         </span>
       </header>
 
       <div className="p-4">
-        <p className="flex items-start gap-2 border-2 border-ink bg-[#ffe500] px-3 py-2 text-xs font-semibold leading-snug text-ink">
-          <ShieldQuestion className="mt-0.5 size-4 shrink-0" />
+        <p className="flex items-start gap-2.5 rounded-md border border-warning/30 bg-warning-soft px-3 py-2.5 text-xs leading-relaxed text-warning-foreground">
+          <ShieldQuestion className="mt-px size-4 shrink-0" />
           <span>
             {audience === "judge"
-              ? "This is machine-generated context to speed up your read. It carries no score, and it cannot change one. The scorecard below is entirely yours."
+              ? "Machine-generated context to speed up your read. It carries no score and cannot change one — the scorecard is entirely yours."
               : "This is the machine-generated briefing judges also see. It has no effect on your score, and no judge is required to follow it."}
           </span>
         </p>
 
-        <p className="mt-4 text-sm leading-relaxed">{review.summary}</p>
+        <p className="mt-4 text-sm leading-relaxed text-foreground">{review.summary}</p>
 
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <div className="border-2 border-ink bg-surface p-3">
-            <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="surface-inset p-3">
+            <p className="text-xs font-semibold text-success-foreground">
               Noted strengths
             </p>
             <ul className="mt-2 space-y-1.5">
               {review.strengths.map((item) => (
-                <li key={item} className="flex gap-2 text-xs leading-snug">
-                  <span aria-hidden className="font-black text-[#1f9d55]">
+                <li
+                  key={item}
+                  className="flex gap-2 text-xs leading-relaxed text-muted-foreground"
+                >
+                  <span aria-hidden className="font-semibold text-success">
                     +
                   </span>
                   {item}
@@ -70,14 +73,17 @@ export function AdvisoryPanel({
             </ul>
           </div>
 
-          <div className="border-2 border-ink bg-surface p-3">
-            <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+          <div className="surface-inset p-3">
+            <p className="text-xs font-semibold text-danger-foreground">
               Gaps worth probing
             </p>
             <ul className="mt-2 space-y-1.5">
               {review.risks.map((item) => (
-                <li key={item} className="flex gap-2 text-xs leading-snug">
-                  <span aria-hidden className="font-black text-[#d8382a]">
+                <li
+                  key={item}
+                  className="flex gap-2 text-xs leading-relaxed text-muted-foreground"
+                >
+                  <span aria-hidden className="font-semibold text-destructive">
                     !
                   </span>
                   {item}
@@ -87,14 +93,16 @@ export function AdvisoryPanel({
           </div>
         </div>
 
-        <div className="mt-4 border-2 border-ink bg-surface p-3">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+        <div className="mt-3 rounded-md border border-border bg-card p-3">
+          <p className="text-xs font-semibold">
             Suggested question to ask the team
           </p>
-          <p className="mt-1.5 text-xs leading-snug">{review.suggestedFocus}</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+            {review.suggestedFocus}
+          </p>
         </div>
 
-        <p className="mt-3 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        <p className="mt-3 text-[0.6875rem] text-muted-foreground">
           Generated by {review.model}
         </p>
       </div>

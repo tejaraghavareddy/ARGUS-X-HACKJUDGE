@@ -27,15 +27,12 @@ import {
 export default function AdminTeamDetail() {
   const { teamId } = useParams<{ teamId: string }>();
   const team = teamId ? (teamId as Id<"teams">) : null;
-  const data = useQuery(
-    api.teams.adminTeamDetail,
-    team ? { teamId: team } : "skip",
-  );
+  const data = useQuery(api.teams.adminTeamDetail, team ? { teamId: team } : "skip");
 
   if (data === undefined) {
     return (
       <AppShell role="admin">
-        <div className="nb-inset px-6 py-10 text-center text-sm font-semibold uppercase tracking-widest">
+        <div className="surface-inset px-6 py-14 text-center text-sm text-muted-foreground">
           Loading team…
         </div>
       </AppShell>
@@ -45,12 +42,9 @@ export default function AdminTeamDetail() {
   if (!data.team) {
     return (
       <AppShell role="admin">
-        <div className="nb-card p-8">
-          <h1 className="text-xl font-black">Team not found</h1>
-          <Link
-            to="/admin/teams"
-            className="nb-press mt-5 inline-flex h-10 items-center border-2 border-ink bg-primary px-4 text-sm font-semibold uppercase tracking-wide text-primary-foreground"
-          >
+        <div className="surface-card p-7">
+          <h1 className="text-xl font-semibold">Team not found</h1>
+          <Link to="/admin/teams" className="btn-base btn-primary mt-5">
             Back to teams
           </Link>
         </div>
@@ -69,7 +63,7 @@ export default function AdminTeamDetail() {
     <AppShell role="admin">
       <Link
         to="/admin/teams"
-        className="mb-4 inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest hover:underline"
+        className="mb-4 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft className="size-3.5" />
         All teams
@@ -77,7 +71,7 @@ export default function AdminTeamDetail() {
 
       <PageHeader
         title={data.team.projectName}
-        description={`${data.team.name} · ${data.team.tagline}`}
+        description={`${data.team.name} — ${data.team.tagline}`}
         actions={
           data.submission ? (
             <StatusBadge
@@ -91,12 +85,12 @@ export default function AdminTeamDetail() {
       />
 
       <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Track" value={data.team.trackName} tone="ink" />
+        <StatTile label="Track" value={data.team.trackName} tone="primary" />
         <StatTile label="Members" value={data.members.length} />
         <StatTile
           label="Scorecards"
-          value={`${finals.length}/${data.scorecards.length}`}
-          hint="final / total"
+          value={`${finals.length} / ${data.scorecards.length}`}
+          hint="final of total"
         />
         <StatTile
           label="Average"
@@ -105,15 +99,15 @@ export default function AdminTeamDetail() {
         />
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-[1fr_1fr] lg:items-start">
+      <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
         <div className="space-y-5">
           <SectionCard title="Submission">
             <p className="text-sm leading-relaxed">{data.submission?.abstract}</p>
             {data.submission?.highlights.length ? (
               <ul className="mt-4 space-y-1.5">
                 {data.submission.highlights.map((item) => (
-                  <li key={item} className="flex gap-2 text-sm">
-                    <span aria-hidden className="font-black">
+                  <li key={item} className="flex gap-2.5 text-sm leading-relaxed">
+                    <span aria-hidden className="font-medium text-primary">
                       →
                     </span>
                     {item}
@@ -121,15 +115,15 @@ export default function AdminTeamDetail() {
                 ))}
               </ul>
             ) : null}
-            <div className="mt-5 flex flex-wrap gap-2 border-t-2 border-ink pt-4">
+            <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4">
               {data.team.demoUrl && (
                 <a
                   href={data.team.demoUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="nb-press inline-flex h-9 items-center gap-2 border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
+                  className="btn-base btn-outline btn-sm"
                 >
-                  Demo <ExternalLink className="size-3.5" />
+                  Demo <ExternalLink />
                 </a>
               )}
               {data.team.repoUrl && (
@@ -137,33 +131,33 @@ export default function AdminTeamDetail() {
                   href={data.team.repoUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="nb-press inline-flex h-9 items-center gap-2 border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
+                  className="btn-base btn-outline btn-sm"
                 >
-                  Repository <ExternalLink className="size-3.5" />
+                  Repository <ExternalLink />
                 </a>
               )}
             </div>
           </SectionCard>
 
           <SectionCard title="Roster">
-            <ul className="space-y-2">
+            <ul className="divide-y divide-border">
               {data.members.map((member) => (
                 <li
                   key={member.email}
-                  className="flex flex-wrap items-center justify-between gap-2 border-2 border-ink bg-surface px-3 py-2"
+                  className="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0"
                 >
                   <span>
-                    <span className="text-sm font-bold">{member.name}</span>
+                    <span className="text-sm font-medium">{member.name}</span>
                     {member.isLead && (
-                      <span className="ml-2 border-2 border-ink bg-[#ffe500] px-1.5 text-[10px] font-bold uppercase tracking-wider">
+                      <span className="ml-2 rounded-full bg-accent px-1.5 py-px text-[0.625rem] font-semibold text-accent-foreground">
                         Lead
                       </span>
                     )}
-                    <span className="block text-xs text-muted-foreground">
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
                       {member.email}
                     </span>
                   </span>
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     {member.role}
                   </span>
                 </li>
@@ -184,13 +178,16 @@ export default function AdminTeamDetail() {
               description="Judges assigned to this team have not filed their scorecards."
             />
           ) : (
-            <div className="space-y-4">
-              {data.scorecards.map((card) => (
-                <article key={`${card.judgeName}-${card.submittedAt}`} className="nb-flat p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b-2 border-ink pb-3">
+            <div className="space-y-3">
+              {data.scorecards.map((card, index) => (
+                <article
+                  key={`${card.judgeName}-${index}`}
+                  className="rounded-lg border border-border p-4"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
                     <div>
-                      <p className="text-sm font-bold">{card.judgeName}</p>
-                      <p className="text-[11px] text-muted-foreground">
+                      <p className="text-sm font-medium">{card.judgeName}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
                         {card.isFinal
                           ? `Submitted ${formatDate(card.submittedAt)}`
                           : "Draft — not counted in standings"}
@@ -203,7 +200,7 @@ export default function AdminTeamDetail() {
                           RECOMMENDATION_TONE.hold
                         }
                       />
-                      <span className="tabular border-2 border-ink bg-ink px-2 py-0.5 text-sm font-black text-white">
+                      <span className="tabular rounded-md bg-secondary px-2 py-0.5 text-sm font-semibold text-foreground">
                         {card.totalScore}
                       </span>
                     </div>
@@ -215,19 +212,19 @@ export default function AdminTeamDetail() {
                         key={criterion.name}
                         className="flex items-center justify-between gap-3"
                       >
-                        <dt className="text-xs font-semibold">
+                        <dt className="text-xs text-muted-foreground">
                           {criterion.name}
                         </dt>
-                        <dd className="tabular text-xs font-bold">
-                          {card.breakdown[criterion.name] ?? "–"}
-                          /{criterion.maxScore}
+                        <dd className="tabular text-xs font-medium">
+                          {card.breakdown[criterion.name] ?? "–"}/
+                          {criterion.maxScore}
                         </dd>
                       </div>
                     ))}
                   </dl>
 
                   {card.comments && (
-                    <p className="mt-3 border-t-2 border-ink pt-3 text-xs leading-relaxed text-muted-foreground">
+                    <p className="mt-3 border-t border-border pt-3 text-xs leading-relaxed text-muted-foreground">
                       {card.comments}
                     </p>
                   )}

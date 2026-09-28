@@ -45,7 +45,7 @@ export default function ParticipantHome() {
   if (data === undefined) {
     return (
       <AppShell role="participant">
-        <div className="nb-inset px-6 py-10 text-center text-sm font-semibold uppercase tracking-widest">
+        <div className="surface-inset px-6 py-14 text-center text-sm text-muted-foreground">
           Loading your team…
         </div>
       </AppShell>
@@ -55,8 +55,8 @@ export default function ParticipantHome() {
   if (!data.team) {
     return (
       <AppShell role="participant">
-        <div className="nb-card p-7">
-          <h1 className="text-xl font-black">No team yet</h1>
+        <div className="surface-card p-7">
+          <h1 className="text-xl font-semibold">No team yet</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             You are not on a team for this hackathon. Ask your team lead to add
             you.
@@ -75,7 +75,10 @@ export default function ParticipantHome() {
     try {
       await updateSubmission({
         abstract,
-        highlights: highlights.split("\n").map((h) => h.trim()).filter(Boolean),
+        highlights: highlights
+          .split("\n")
+          .map((h) => h.trim())
+          .filter(Boolean),
         videoUrl,
       });
       toast.success("Submission saved.");
@@ -94,9 +97,7 @@ export default function ParticipantHome() {
       await submitSubmission({});
       toast.success("Submission locked in. Good luck.");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not submit.",
-      );
+      toast.error(error instanceof Error ? error.message : "Could not submit.");
     } finally {
       setSaving(false);
     }
@@ -106,7 +107,7 @@ export default function ParticipantHome() {
     <AppShell role="participant">
       <PageHeader
         title={team.projectName}
-        description={`${team.name} · ${team.tagline}`}
+        description={`${team.name} — ${team.tagline}`}
         actions={
           submission ? (
             <StatusBadge
@@ -117,7 +118,7 @@ export default function ParticipantHome() {
       />
 
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
-        <StatTile label="Track" value={team.trackName} tone="ink" />
+        <StatTile label="Track" value={team.trackName} tone="primary" />
         <StatTile label="Team members" value={team.members.length} />
         <StatTile
           label="Your role"
@@ -146,7 +147,6 @@ export default function ParticipantHome() {
                   disabled={locked}
                   onChange={(e) => setAbstract(e.target.value)}
                   placeholder="What does it do, who is it for, and how did you build it?"
-                  className="rounded-none border-2 border-ink bg-surface"
                 />
               </div>
 
@@ -159,7 +159,6 @@ export default function ParticipantHome() {
                   disabled={locked}
                   onChange={(e) => setHighlights(e.target.value)}
                   placeholder="One per line — the three things you most want judges to notice."
-                  className="rounded-none border-2 border-ink bg-surface"
                 />
               </div>
 
@@ -171,7 +170,6 @@ export default function ParticipantHome() {
                   disabled={locked}
                   onChange={(e) => setVideoUrl(e.target.value)}
                   placeholder="https://…"
-                  className="rounded-none border-2 border-ink bg-surface"
                 />
               </div>
             </div>
@@ -199,37 +197,41 @@ export default function ParticipantHome() {
           </SectionCard>
 
           <SectionCard title="Your team">
-            <ul className="space-y-2">
+            <ul className="divide-y divide-border">
               {team.members.map((member) => (
                 <li
                   key={member.name}
-                  className="flex items-center justify-between border-2 border-ink bg-surface px-3 py-2"
+                  className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
                 >
-                  <span className="text-sm font-semibold">
+                  <span className="text-sm font-medium">
                     {member.name}
                     {member.isYou && (
-                      <span className="ml-2 border-2 border-ink bg-[#ffe500] px-1.5 text-[10px] font-bold uppercase tracking-wider">
+                      <span className="ml-2 rounded-full bg-accent px-1.5 py-px text-[0.625rem] font-semibold text-accent-foreground">
                         You
                       </span>
                     )}
                   </span>
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                    {member.isLead ? "Lead · " : ""}
+                  <span className="text-xs text-muted-foreground">
+                    {member.isLead && (
+                      <span className="mr-1.5 font-medium text-foreground">
+                        Lead
+                      </span>
+                    )}
                     {member.role}
                   </span>
                 </li>
               ))}
             </ul>
 
-            <div className="mt-4 flex flex-wrap gap-2 border-t-2 border-ink pt-4">
+            <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4">
               {team.demoUrl && (
                 <a
                   href={team.demoUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="nb-press inline-flex h-9 items-center gap-2 border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
+                  className="btn-base btn-outline btn-sm"
                 >
-                  Live demo <ExternalLink className="size-3.5" />
+                  Live demo <ExternalLink />
                 </a>
               )}
               {team.repoUrl && (
@@ -237,9 +239,9 @@ export default function ParticipantHome() {
                   href={team.repoUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="nb-press inline-flex h-9 items-center gap-2 border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
+                  className="btn-base btn-outline btn-sm"
                 >
-                  Repository <ExternalLink className="size-3.5" />
+                  Repository <ExternalLink />
                 </a>
               )}
             </div>
@@ -256,7 +258,7 @@ export default function ParticipantHome() {
               total={reviewProgress.assignedJudges}
               label="Judges finished"
             />
-            <p className="mt-4 border-2 border-ink bg-[#e6e6de] px-3 py-2 text-xs leading-snug">
+            <p className="mt-4 rounded-md border border-border bg-muted px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
               Individual scores and rankings stay private until results are
               published. You will see the outcome here once organizers release
               them.

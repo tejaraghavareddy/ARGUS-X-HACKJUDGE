@@ -1,5 +1,5 @@
-import { Link } from "react-router";
 import { useState } from "react";
+import { Link } from "react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
   Bar,
@@ -25,6 +25,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { HACKATHON_TONE, formatDate } from "@/lib/rapture";
 
+const TOOLTIP_STYLE = {
+  border: "1px solid #e2e3e7",
+  borderRadius: "0.5rem",
+  background: "#ffffff",
+  fontSize: 12,
+  boxShadow: "0 12px 24px -6px rgb(16 24 40 / 0.12)",
+};
+
+const AXIS = { fontSize: 11, fill: "#5b6270" };
+
 export default function AdminOverview() {
   const data = useQuery(api.hackathons.adminOverview);
   const seed = useMutation(api.seed.seed);
@@ -33,37 +43,34 @@ export default function AdminOverview() {
   if (data === undefined) {
     return (
       <AppShell role="admin">
-        <div className="nb-inset px-6 py-10 text-center text-sm font-semibold uppercase tracking-widest">
+        <div className="surface-inset px-6 py-14 text-center text-sm text-muted-foreground">
           Loading oversight data…
         </div>
       </AppShell>
     );
   }
 
+  const runSeed = async () => {
+    setSeeding(true);
+    try {
+      await seed({});
+      toast.success("Demo data rebuilt.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Reset failed.");
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   if (!data.hackathon) {
     return (
       <AppShell role="admin">
-        <div className="nb-card p-8">
-          <h1 className="text-xl font-black">No hackathon yet</h1>
+        <div className="surface-card p-7">
+          <h1 className="text-xl font-semibold">No hackathon yet</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             The database is empty. Load the demo dataset to get started.
           </p>
-          <Button
-            className="mt-5"
-            onClick={async () => {
-              setSeeding(true);
-              try {
-                await seed({});
-                toast.success("Demo data loaded.");
-              } catch (error) {
-                toast.error(
-                  error instanceof Error ? error.message : "Seed failed.",
-                );
-              } finally {
-                setSeeding(false);
-              }
-            }}
-          >
+          <Button className="mt-5" onClick={() => void runSeed()}>
             <RotateCcw />
             {seeding ? "Loading…" : "Load demo data"}
           </Button>
@@ -88,26 +95,12 @@ export default function AdminOverview() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge
-              tone={HACKATHON_TONE[data.hackathon.status] ?? HACKATHON_TONE.judging}
+              tone={
+                HACKATHON_TONE[data.hackathon.status] ??
+                HACKATHON_TONE.judging
+              }
             />
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={seeding}
-              onClick={async () => {
-                setSeeding(true);
-                try {
-                  await seed({});
-                  toast.success("Demo data rebuilt.");
-                } catch (error) {
-                  toast.error(
-                    error instanceof Error ? error.message : "Reset failed.",
-                  );
-                } finally {
-                  setSeeding(false);
-                }
-              }}
-            >
+            <Button variant="outline" size="sm" disabled={seeding} onClick={() => void runSeed()}>
               <RotateCcw />
               {seeding ? "Rebuilding…" : "Reset demo data"}
             </Button>
@@ -120,9 +113,9 @@ export default function AdminOverview() {
           label="Teams"
           value={totals.teams}
           hint={`${totals.participants} participants`}
-          tone="ink"
+          tone="primary"
         />
-        <StatTile label="Judges" value={totals.judges} tone="surface" />
+        <StatTile label="Judges" value={totals.judges} />
         <StatTile
           label="Scorecards in"
           value={totals.finalizedScorecards}
@@ -138,9 +131,9 @@ export default function AdminOverview() {
 
       {/* The one thing an organizer most needs to act on. */}
       {totals.unassignedTeams > 0 && (
-        <div className="mb-6 flex items-start gap-3 border-2 border-ink bg-[#ffe500] p-4">
-          <AlertTriangle className="mt-0.5 size-5 shrink-0" />
-          <p className="text-sm font-semibold leading-snug">
+        <div className="mb-6 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning-soft px-4 py-3">
+          <AlertTriangle className="mt-px size-4 shrink-0 text-warning" />
+          <p className="text-sm leading-relaxed text-warning-foreground">
             {totals.unassignedTeams} team
             {totals.unassignedTeams === 1 ? " has" : "s have"} no judge assigned
             and will not be scored until that is fixed.
@@ -158,7 +151,7 @@ export default function AdminOverview() {
             total={totals.assignments}
             label="Scorecards submitted"
           />
-          <div className="mt-5 grid grid-cols-3 gap-2">
+          <div className="mt-5 grid grid-cols-3 gap-3">
             <StatTile label="Done" value={totals.completed} />
             <StatTile label="In progress" value={totals.inProgress} />
             <StatTile label="Not started" value={totals.notStarted} />
@@ -169,11 +162,8 @@ export default function AdminOverview() {
           title="Submissions"
           description="Current state of every team's submission."
         >
-          <div className="grid grid-cols-2 gap-2">
-            <StatTile
-              label="Submitted"
-              value={submissionBreakdown.submitted}
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <StatTile label="Submitted" value={submissionBreakdown.submitted} />
             <StatTile
               label="Under review"
               value={submissionBreakdown.underReview}
@@ -189,33 +179,32 @@ export default function AdminOverview() {
         >
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={byTrack} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-                <CartesianGrid stroke="#111111" strokeOpacity={0.15} />
+              <BarChart
+                data={byTrack}
+                margin={{ top: 4, right: 8, left: -22, bottom: 0 }}
+              >
+                <CartesianGrid vertical={false} stroke="#e2e3e7" />
                 <XAxis
                   dataKey="name"
-                  tick={{ fontSize: 11, fontWeight: 700, fill: "#111111" }}
-                  axisLine={{ stroke: "#111111", strokeWidth: 2 }}
+                  tick={AXIS}
+                  axisLine={{ stroke: "#e2e3e7" }}
                   tickLine={false}
                   interval={0}
                   angle={-20}
                   textAnchor="end"
-                  height={50}
+                  height={52}
                 />
                 <YAxis
                   allowDecimals={false}
-                  tick={{ fontSize: 11, fontWeight: 700, fill: "#111111" }}
-                  axisLine={{ stroke: "#111111", strokeWidth: 2 }}
+                  tick={AXIS}
+                  axisLine={false}
+                  tickLine={false}
                 />
                 <Tooltip
-                  cursor={{ fill: "#ffe500", fillOpacity: 0.35 }}
-                  contentStyle={{
-                    border: "2px solid #111111",
-                    borderRadius: 0,
-                    fontWeight: 700,
-                    fontSize: 12,
-                  }}
+                  cursor={{ fill: "#f0f1f2" }}
+                  contentStyle={TOOLTIP_STYLE}
                 />
-                <Bar dataKey="teams" radius={0} stroke="#111111" strokeWidth={2}>
+                <Bar dataKey="teams" radius={[4, 4, 0, 0]} maxBarSize={38}>
                   {byTrack.map((entry) => (
                     <Cell key={entry.name} fill={entry.color} />
                   ))}
@@ -234,32 +223,31 @@ export default function AdminOverview() {
               <BarChart
                 data={scoreDistribution}
                 layout="vertical"
-                margin={{ top: 4, right: 16, left: 8, bottom: 0 }}
+                margin={{ top: 4, right: 24, left: 8, bottom: 0 }}
               >
-                <CartesianGrid stroke="#111111" strokeOpacity={0.15} />
+                <CartesianGrid horizontal={false} stroke="#e2e3e7" />
                 <XAxis
                   type="number"
                   domain={[0, 100]}
-                  tick={{ fontSize: 11, fontWeight: 700, fill: "#111111" }}
-                  axisLine={{ stroke: "#111111", strokeWidth: 2 }}
+                  tick={AXIS}
+                  axisLine={false}
+                  tickLine={false}
                 />
                 <YAxis
                   type="category"
                   dataKey="name"
-                  width={92}
-                  tick={{ fontSize: 11, fontWeight: 700, fill: "#111111" }}
-                  axisLine={{ stroke: "#111111", strokeWidth: 2 }}
+                  width={96}
+                  tick={AXIS}
+                  axisLine={false}
+                  tickLine={false}
                 />
-                <Tooltip
-                  cursor={{ fill: "#ffe500", fillOpacity: 0.35 }}
-                  contentStyle={{
-                    border: "2px solid #111111",
-                    borderRadius: 0,
-                    fontWeight: 700,
-                    fontSize: 12,
-                  }}
+                <Tooltip cursor={{ fill: "#f0f1f2" }} contentStyle={TOOLTIP_STYLE} />
+                <Bar
+                  dataKey="average"
+                  fill="#0d5c55"
+                  radius={[0, 4, 4, 0]}
+                  maxBarSize={22}
                 />
-                <Bar dataKey="average" fill="#2b6be4" radius={0} stroke="#111111" strokeWidth={2} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -271,10 +259,7 @@ export default function AdminOverview() {
         title="Standings"
         description="Ranked by mean of finalized scorecards."
         actions={
-          <Link
-            to="/admin/teams"
-            className="nb-press inline-flex h-8 items-center border-2 border-ink bg-surface px-3 text-xs font-bold uppercase tracking-wider hover:bg-accent"
-          >
+          <Link to="/admin/teams" className="btn-base btn-outline btn-sm">
             All teams
           </Link>
         }
@@ -284,47 +269,39 @@ export default function AdminOverview() {
             No finalized scorecards yet, so there is nothing to rank.
           </p>
         ) : (
-          <div className="-mx-2 overflow-x-auto">
-            <table className="w-full min-w-[620px] text-sm">
+          <div className="-mx-5 overflow-x-auto px-5">
+            <table className="data-table min-w-[620px]">
               <thead>
-                <tr className="border-b-2 border-ink text-left">
-                  {["#", "Project", "Track", "Scorecards", "Average"].map((h) => (
-                    <th
-                      key={h}
-                      className="px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest"
-                    >
-                      {h}
-                    </th>
-                  ))}
+                <tr>
+                  <th className="w-12">#</th>
+                  <th>Project</th>
+                  <th>Track</th>
+                  <th>Scorecards</th>
+                  <th className="text-right">Average</th>
                 </tr>
               </thead>
               <tbody>
                 {standings.map((row, index) => (
-                  <tr
-                    key={row.teamId}
-                    className="border-b border-ink/20 last:border-b-0 hover:bg-accent/40"
-                  >
-                    <td className="tabular px-3 py-2.5 font-black">
+                  <tr key={row.teamId}>
+                    <td className="tabular font-semibold text-muted-foreground">
                       {index + 1}
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td>
                       <Link
                         to={`/admin/teams/${row.teamId}`}
-                        className="font-bold hover:underline"
+                        className="font-medium hover:underline"
                       >
                         {row.projectName}
                       </Link>
-                      <span className="block text-xs text-muted-foreground">
+                      <span className="mt-0.5 block text-xs text-muted-foreground">
                         {row.teamName}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-xs font-semibold">
+                    <td className="text-sm text-muted-foreground">
                       {row.trackName}
                     </td>
-                    <td className="tabular px-3 py-2.5">
-                      {row.scorecards}
-                    </td>
-                    <td className="tabular px-3 py-2.5 text-base font-black">
+                    <td className="tabular">{row.scorecards}</td>
+                    <td className="tabular text-right text-base font-semibold">
                       {row.average ?? "—"}
                     </td>
                   </tr>
@@ -340,42 +317,30 @@ export default function AdminOverview() {
         title="Judge workload"
         description="Assignments, completion and remaining capacity per judge."
       >
-        <div className="-mx-2 overflow-x-auto">
-          <table className="w-full min-w-[620px] text-sm">
+        <div className="-mx-5 overflow-x-auto px-5">
+          <table className="data-table min-w-[640px]">
             <thead>
-              <tr className="border-b-2 border-ink text-left">
-                {["Judge", "Organization", "Assigned", "Done", "In progress", "Load"].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      className="px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest"
-                    >
-                      {h}
-                    </th>
-                  ),
-                )}
+              <tr>
+                <th>Judge</th>
+                <th>Organization</th>
+                <th className="text-right">Assigned</th>
+                <th className="text-right">Done</th>
+                <th className="w-48">Load</th>
               </tr>
             </thead>
             <tbody>
               {judgeLoad.map((judge) => (
-                <tr
-                  key={judge.judgeId}
-                  className="border-b border-ink/20 last:border-b-0 hover:bg-accent/40"
-                >
-                  <td className="px-3 py-2.5 font-bold">{judge.name}</td>
-                  <td className="px-3 py-2.5 text-xs text-muted-foreground">
+                <tr key={judge.judgeId}>
+                  <td className="font-medium">{judge.name}</td>
+                  <td className="text-sm text-muted-foreground">
                     {judge.organization}
                   </td>
-                  <td className="tabular px-3 py-2.5">{judge.assigned}</td>
-                  <td className="tabular px-3 py-2.5 font-bold">
+                  <td className="tabular text-right">{judge.assigned}</td>
+                  <td className="tabular text-right font-medium">
                     {judge.completed}
                   </td>
-                  <td className="tabular px-3 py-2.5">{judge.inProgress}</td>
-                  <td className="px-3 py-2.5">
-                    <BlockProgress
-                      done={judge.completed}
-                      total={judge.assigned}
-                    />
+                  <td>
+                    <BlockProgress done={judge.completed} total={judge.assigned} />
                   </td>
                 </tr>
               ))}

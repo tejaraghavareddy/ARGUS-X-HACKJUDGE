@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { ArrowRight, Loader2, ShieldCheck } from "lucide-react";
+import { ArrowRight, Check, Loader2, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +13,7 @@ import {
   ROLE_HOME,
   type AppRole,
 } from "@/lib/rapture";
+import { cn } from "@/lib/utils";
 
 interface AuthProps {
   redirectAfterAuth?: string;
@@ -23,11 +24,17 @@ function resolveRedirect(returnTo: string | null, fallback: string) {
   return fallback;
 }
 
-const ROLE_BLOCK: Record<AppRole, string> = {
-  admin: "bg-[#d8382a] text-white",
-  judge: "bg-[#2b6be4] text-white",
-  participant: "bg-[#ffe500] text-ink",
+const ROLE_TONE: Record<AppRole, string> = {
+  admin: "bg-danger-soft text-danger-foreground",
+  judge: "bg-info-soft text-info-foreground",
+  participant: "bg-accent text-accent-foreground",
 };
+
+const PROMISES = [
+  "Per-judge isolation on every read and write",
+  "Locked scorecards with a full audit trail",
+  "AI briefs the judge, never scores for them",
+];
 
 export default function Auth({ redirectAfterAuth = "/dashboard" }: AuthProps) {
   const { signIn } = useAuthActions();
@@ -74,116 +81,142 @@ export default function Auth({ redirectAfterAuth = "/dashboard" }: AuthProps) {
   };
 
   return (
-    <div className="min-h-screen bg-background lg:grid lg:grid-cols-[1.1fr_1fr]">
-      {/* Brand panel — flat colour blocks, no gradients or glass. */}
-      <div className="flex flex-col justify-between border-b-2 border-ink bg-ink p-8 text-white lg:border-b-0 lg:border-r-2 lg:p-12">
-        <Link to="/" className="flex items-center gap-3">
-          <span className="flex size-11 items-center justify-center border-2 border-white bg-[#ffe500] text-base font-black text-ink">
+    <div className="min-h-screen lg:grid lg:grid-cols-2">
+      {/* Brand panel */}
+      <div className="relative hidden flex-col justify-between overflow-hidden bg-primary p-12 text-primary-foreground lg:flex">
+        <Link to="/" className="flex items-center gap-2.5">
+          <span className="flex size-8 items-center justify-center rounded-md bg-white/15 text-xs font-bold">
             RJ
           </span>
-          <span className="text-lg font-black tracking-tight">RaptureJudge</span>
+          <span className="text-[0.9375rem] font-semibold tracking-[-0.02em]">
+            RaptureJudge
+          </span>
         </Link>
 
-        <div className="py-12 lg:py-0">
-          <h1 className="max-w-lg text-4xl font-black leading-[1.05] tracking-tight lg:text-5xl">
-            Judging you can
-            <br />
-            actually defend.
+        <div className="max-w-md">
+          <span className="inline-flex items-center rounded-full bg-white/12 px-2.5 py-1 text-xs font-medium">
+            Rapture 2026 · National final
+          </span>
+          <h1 className="mt-6 text-4xl leading-[1.08] font-semibold tracking-[-0.03em]">
+            Judging you can actually defend.
           </h1>
-          <p className="mt-5 max-w-md text-sm leading-relaxed text-white/80">
+          <p className="mt-5 text-sm leading-relaxed text-primary-foreground/75">
             Submission tracking, weighted scorecards and a complete audit trail
-            for every judge decision. AI briefs the judge; it never makes the
-            call.
+            for every decision. Built for organizers who have to stand behind
+            the result.
           </p>
 
-          <div className="mt-8 flex flex-wrap gap-2">
-            {["Weighted rubric", "Per-judge isolation", "Locked scorecards"].map(
-              (chip) => (
-                <span
-                  key={chip}
-                  className="border-2 border-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider"
-                >
-                  {chip}
-                </span>
-              ),
-            )}
-          </div>
+          <ul className="mt-8 space-y-2.5">
+            {PROMISES.map((item) => (
+              <li
+                key={item}
+                className="flex items-start gap-2.5 text-sm text-primary-foreground/85"
+              >
+                <Check className="mt-0.5 size-4 shrink-0" />
+                {item}
+              </li>
+            ))}
+          </ul>
         </div>
 
-        <p className="text-[11px] font-bold uppercase tracking-widest text-white/50">
-          Rapture 2026 · Bengaluru + remote
+        <p className="text-xs text-primary-foreground/50">
+          Bengaluru + remote · 36 hour build sprint
         </p>
       </div>
 
-      <div className="flex items-center justify-center p-6 lg:p-12">
-        <div className="w-full max-w-md">
-          <div className="nb-card p-7">
-            <h2 className="text-2xl font-black tracking-tight">Sign in</h2>
-            <p className="mt-1.5 text-sm text-muted-foreground">
-              Use the email your organizer issued to you.
-            </p>
-
-            <form
-              className="mt-6 space-y-4"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void signInAs(email, password);
-              }}
-            >
-              <div className="space-y-1.5">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  autoComplete="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@rapturejudge.io"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                />
-              </div>
-
-              {error && (
-                <p className="border-2 border-ink bg-[#d8382a] px-3 py-2 text-xs font-semibold text-white">
-                  {error}
-                </p>
-              )}
-
-              <Button type="submit" className="w-full" disabled={busy !== null}>
-                {busy ? (
-                  <>
-                    <Loader2 className="animate-spin" />
-                    Signing in…
-                  </>
-                ) : (
-                  <>
-                    Sign in
-                    <ArrowRight />
-                  </>
-                )}
-              </Button>
-            </form>
+      <div className="flex items-center justify-center bg-background px-5 py-12 sm:px-8">
+        <div className="w-full max-w-sm">
+          <div className="mb-8 lg:hidden">
+            <Link to="/" className="flex items-center gap-2.5">
+              <span className="flex size-8 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
+                RJ
+              </span>
+              <span className="text-[0.9375rem] font-semibold tracking-[-0.02em]">
+                RaptureJudge
+              </span>
+            </Link>
           </div>
 
-          {/* Demo shortcuts: the whole point of v1 is proving the three role
+          <h2 className="text-2xl font-semibold tracking-[-0.021em]">Sign in</h2>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            Use the email address your organizer issued to you.
+          </p>
+
+          <form
+            className="mt-6 space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void signInAs(email, password);
+            }}
+          >
+            <div className="space-y-1.5">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@rapturejudge.io"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+              />
+            </div>
+
+            {error && (
+              <p
+                role="alert"
+                className="rounded-md border border-destructive/25 bg-danger-soft px-3 py-2 text-xs text-danger-foreground"
+              >
+                {error}
+              </p>
+            )}
+
+            <Button type="submit" className="w-full" disabled={busy !== null}>
+              {busy ? (
+                <>
+                  <Loader2 className="animate-spin" />
+                  Signing in…
+                </>
+              ) : (
+                <>
+                  Sign in
+                  <ArrowRight />
+                </>
+              )}
+            </Button>
+          </form>
+
+          {/* Demo shortcuts: the point of v1 is proving the three role
               boundaries, so each one is one click away. */}
-          <div className="nb-inset mt-5 p-5">
-            <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest">
-              <ShieldCheck className="size-3.5" />
-              Demo accounts · password {DEMO_PASSWORD}
+          <div className="mt-8">
+            <div className="flex items-center gap-2">
+              <span className="h-px flex-1 bg-border" />
+              <span className="flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-wide text-muted-foreground uppercase">
+                <ShieldCheck className="size-3" />
+                Demo accounts
+              </span>
+              <span className="h-px flex-1 bg-border" />
+            </div>
+
+            <p className="mt-3 text-xs text-muted-foreground">
+              Shared password{" "}
+              <code className="rounded bg-secondary px-1 py-0.5 font-medium text-secondary-foreground">
+                {DEMO_PASSWORD}
+              </code>
             </p>
+
             <div className="mt-3 space-y-2">
               {DEMO_ACCOUNTS.map((account) => (
                 <button
@@ -191,15 +224,18 @@ export default function Auth({ redirectAfterAuth = "/dashboard" }: AuthProps) {
                   type="button"
                   disabled={busy !== null}
                   onClick={() => void signInAs(account.email, DEMO_PASSWORD)}
-                  className="nb-press flex w-full items-center gap-3 border-2 border-ink bg-surface p-3 text-left disabled:opacity-50"
+                  className="surface-flat group flex w-full items-center gap-3 p-3 text-left transition-colors hover:bg-muted disabled:opacity-50"
                 >
                   <span
-                    className={`flex shrink-0 items-center border-2 border-ink px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${ROLE_BLOCK[account.role]}`}
+                    className={cn(
+                      "shrink-0 rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold",
+                      ROLE_TONE[account.role],
+                    )}
                   >
                     {ROLE_LABEL[account.role]}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-bold leading-tight">
+                    <span className="block truncate text-sm font-medium leading-tight">
                       {account.name}
                     </span>
                     <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">
@@ -207,21 +243,25 @@ export default function Auth({ redirectAfterAuth = "/dashboard" }: AuthProps) {
                     </span>
                   </span>
                   {busy === account.email ? (
-                    <Loader2 className="size-4 shrink-0 animate-spin" />
+                    <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
                   ) : (
-                    <ArrowRight className="size-4 shrink-0" />
+                    <ArrowRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
                   )}
                 </button>
               ))}
             </div>
-            <p className="mt-3 text-[11px] leading-snug text-muted-foreground">
+
+            <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
               Each account lands in a different area. Role limits are enforced
               on the server, not just hidden in the interface.
             </p>
           </div>
 
-          <p className="mt-5 text-center text-xs text-muted-foreground">
-            <Link to="/" className="underline underline-offset-4 hover:text-ink">
+          <p className="mt-8 text-center text-xs text-muted-foreground">
+            <Link
+              to="/"
+              className="underline-offset-4 hover:text-foreground hover:underline"
+            >
               Back to the home page
             </Link>
           </p>
