@@ -29,6 +29,12 @@ const AdminTeamDetail = lazy(
 const ParticipantHome = lazy(
   () => import("./pages/participant/ParticipantHome.tsx"),
 );
+const ParticipantTeam = lazy(
+  () => import("./pages/participant/ParticipantTeam.tsx"),
+);
+const ParticipantSubmission = lazy(
+  () => import("./pages/participant/ParticipantSubmission.tsx"),
+);
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -258,6 +264,26 @@ createRoot(document.getElementById("root")!).render(
                   <RequireAuth>
                     <RequireRole allow={["participant"]}>
                       <ParticipantHome />
+                    </RequireRole>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/participant/team"
+                element={
+                  <RequireAuth>
+                    <RequireRole allow={["participant"]}>
+                      <ParticipantTeam />
+                    </RequireRole>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/participant/submission"
+                element={
+                  <RequireAuth>
+                    <RequireRole allow={["participant"]}>
+                      <ParticipantSubmission />
                     </RequireRole>
                   </RequireAuth>
                 }

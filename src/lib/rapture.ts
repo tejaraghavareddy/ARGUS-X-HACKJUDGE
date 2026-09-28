@@ -60,7 +60,11 @@ export const ROLE_NAV: Record<AppRole, NavItem[]> = {
     { label: "Audit log", href: "/admin/audit" },
   ],
   judge: [{ label: "My Teams", href: "/judge" }],
-  participant: [{ label: "My Team", href: "/participant" }],
+  participant: [
+    { label: "Dashboard", href: "/participant" },
+    { label: "My Team", href: "/participant/team" },
+    { label: "Submission", href: "/participant/submission" },
+  ],
 };
 
 export type Tone = {

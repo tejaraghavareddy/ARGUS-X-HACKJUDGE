@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { AlarmClock, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Tone } from "@/lib/rapture";
 
@@ -141,11 +142,14 @@ export function BlockProgress({
   total,
   label,
   className,
+  hideCount,
 }: {
   done: number;
   total: number;
   label?: string;
   className?: string;
+  /** For percentage-style progress, where "42/100" is noise. */
+  hideCount?: boolean;
 }) {
   const safeTotal = Math.max(total, 0);
   const pct = safeTotal === 0 ? 0 : Math.round((done / safeTotal) * 100);
@@ -156,9 +160,15 @@ export function BlockProgress({
         <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
           <span className="text-muted-foreground">{label ?? "Progress"}</span>
           <span className="tabular font-medium">
-            {done}/{safeTotal}
-            {safeTotal > 0 && (
-              <span className="ml-1 text-muted-foreground">{pct}%</span>
+            {hideCount ? (
+              <>{pct}%</>
+            ) : (
+              <>
+                {done}/{safeTotal}
+                {safeTotal > 0 && (
+                  <span className="ml-1 text-muted-foreground">{pct}%</span>
+                )}
+              </>
             )}
           </span>
         </div>
@@ -175,6 +185,102 @@ export function BlockProgress({
           className="h-full rounded-full bg-primary transition-[width] duration-300"
           style={{ width: `${pct}%` }}
         />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Live countdown to a deadline.
+ *
+ * Ticks every second rather than every minute: a team working at 11:59pm needs
+ * to see the seconds, and the urgency is the whole point. The interval is
+ * cleared on unmount so navigating away does not leak a timer. Precision
+ * scales down as the deadline gets further away — seconds past a week, or
+ * minutes past a month, are just noise.
+ */
+export function Countdown({ to }: { to: number }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const remaining = to - now;
+
+  if (remaining <= 0) {
+    return (
+      <div className="flex items-center gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3.5">
+        <CheckCircle2 className="size-5 shrink-0 text-destructive" />
+        <div>
+          <p className="text-sm font-semibold text-foreground">
+            The deadline has passed
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Contact the organizers if you believe this is wrong.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const totalSeconds = Math.floor(remaining / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const showSeconds = remaining < 86_400_000;
+  const showMinutes = remaining < 2_592_000_000;
+  const urgent = remaining < 86_400_000;
+  const critical = remaining < 3_600_000;
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-4 py-4",
+        critical
+          ? "border-destructive/50 bg-destructive/10"
+          : urgent
+            ? "border-warning/50 bg-warning/10"
+            : "border-border bg-muted",
+      )}
+    >
+      <div className="flex items-center gap-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+        <AlarmClock className="size-3.5" />
+        Time remaining
+      </div>
+      <div className="mt-2 flex flex-wrap items-baseline gap-x-1.5 font-mono text-3xl font-semibold tabular-nums tracking-tight text-foreground sm:text-4xl">
+        {days > 0 && (
+          <>
+            <span>{days}</span>
+            <span className="font-sans text-base font-medium text-muted-foreground">
+              {days === 1 ? "day" : "days"}
+            </span>
+            <span className="font-sans text-muted-foreground">·</span>
+          </>
+        )}
+        <span>{String(hours).padStart(2, "0")}</span>
+        <span className="font-sans text-base font-medium text-muted-foreground">
+          h
+        </span>
+        {showMinutes && (
+          <>
+            <span>{String(minutes).padStart(2, "0")}</span>
+            <span className="font-sans text-base font-medium text-muted-foreground">
+              m
+            </span>
+          </>
+        )}
+        {showSeconds && (
+          <>
+            <span>{String(seconds).padStart(2, "0")}</span>
+            <span className="font-sans text-base font-medium text-muted-foreground">
+              s
+            </span>
+          </>
+        )}
       </div>
     </div>
   );

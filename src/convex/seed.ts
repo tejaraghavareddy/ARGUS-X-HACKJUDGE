@@ -569,16 +569,21 @@ export const seed = mutation({
       rules:
         "All code must be committed to the public repository by the submission deadline. Third-party APIs must be disclosed. Teams may not include a team member who has declared a conflict of interest. Judging follows the published rubric; scores are final once submitted.",
       location: "Bengaluru + remote",
-      status: "judging",
+      // The demo event is mid-build with submissions OPEN, deliberately: the
+      // participant submission journey is the thing being demonstrated, and a
+      // sealed deadline would make the whole form read-only on first load.
+      // Judging is left open too so the judge screens stay usable; a real
+      // organizer can close either switch from the Hackathon settings screen.
+      status: "build",
       isCurrent: true,
-      startsAt: now - 9 * DAY,
-      endsAt: now - 3 * DAY,
-      registrationClosesAt: now - 8 * DAY,
-      submissionsCloseAt: now - 3 * DAY,
-      judgingStartsAt: now - 3 * DAY,
-      judgingEndsAt: now + 2 * DAY,
+      startsAt: now - 2 * DAY,
+      endsAt: now + 3 * DAY,
+      registrationClosesAt: now - 1 * DAY,
+      submissionsCloseAt: now + 1 * DAY,
+      judgingStartsAt: now + 1 * DAY,
+      judgingEndsAt: now + 3 * DAY,
       registrationOpen: false,
-      submissionsOpen: false,
+      submissionsOpen: true,
       judgingOpen: true,
       blindJudging: false,
       publicLeaderboard: true,
@@ -651,8 +656,6 @@ export const seed = mutation({
         tagline: team.tagline,
         description: team.abstract,
         techStack: team.stack,
-        repoUrl: `https://github.com/rapture/${team.project.toLowerCase().replace(/\s+/g, "-")}`,
-        demoUrl: `https://${team.project.toLowerCase().replace(/\s+/g, "-")}.rapture.dev`,
         createdAt: now - 8 * DAY + index * HOUR,
       });
       teamIds.push(teamId);
@@ -699,7 +702,17 @@ export const seed = mutation({
 
       // One team is deliberately left unsubmitted so the admin oversight
       // screens show a realistic mix of states.
-      const isUnsubmitted = index === TEAMS.length - 1;
+      // Two teams are left unsubmitted: one of them (index 2) is reachable
+      // through a demo participant login so the in-progress submission journey
+      // is demonstrable, and the last one is never covered by a judge so the
+      // admin dashboard has a real coverage gap to show.
+      const isUnsubmitted = index === 2 || index === TEAMS.length - 1;
+
+      const slug = team.project.toLowerCase().replace(/\s+/g, "-");
+      // The last team is left as an in-progress draft so the participant
+      // dashboard has a real partial submission to show, and so the admin
+      // oversight screens surface an uncovered gap.
+      const partial = isUnsubmitted;
 
       await ctx.db.insert("submissions", {
         hackathonId,
@@ -707,8 +720,29 @@ export const seed = mutation({
         status: isUnsubmitted ? "draft" : "submitted",
         abstract: team.abstract,
         highlights: team.highlights,
-        videoUrl: `https://www.youtube.com/watch?v=rapture${index + 1}`,
-        ...(isUnsubmitted ? {} : { submittedAt: now - 3 * DAY - index * HOUR }),
+        keyFeatures: team.highlights,
+        technologyStack: team.stack,
+        problemStatement: `${team.abstract} Today this is handled manually, which is slow and applied inconsistently from one team to the next.`,
+        solutionDescription: `${team.project} is a working end-to-end system rather than a prototype slice. ${team.abstract} The full pipeline was exercised on real data throughout the build, and the deployed demo is the same code path the team developed.`,
+        targetUsers: `Built for ${team.tagline.toLowerCase()} teams and the operators who support them day to day. We validated the workflow with ${2 + (index % 4)} people during the build phase and iterated on what they actually got stuck on.`,
+        innovation: `The distinctive part is ${(team.highlights[0] ?? "the end-to-end integration").toLowerCase()}, which removes a manual step the previous tooling required. We deliberately did not wrap an off-the-shelf model; the contribution is the workflow and the evaluation around it.`,
+        expectedImpact: `Rolled out across a typical cohort, this removes the manual bottleneck for every team that currently works around it. So far this is measured only on our demo dataset, and we have not validated it at production volume.`,
+        implementationDetails: `Built on ${team.stack.join(", ")}. Services are containerised and deployed from the repository's CI on every merge to main, so the demo judges are looking at is the commit history rather than a hand-built environment.`,
+        // Deliberately blank on the draft team so completion reads as partial.
+        futureScope: partial
+          ? ""
+          : "Next: multi-tenancy, an offline mode for teams without reliable connectivity, and a public API so other tooling can read the results.",
+        githubUrl: `https://github.com/rapture/${slug}`,
+        liveDemoUrl: `https://${slug}.rapture.dev`,
+        demoVideoUrl: `https://www.youtube.com/watch?v=rapture${index + 1}`,
+        ...(isUnsubmitted
+          ? {}
+          : {
+              submittedAt: now - 3 * DAY - index * HOUR,
+              lockedAt: now - 3 * DAY - index * HOUR,
+              submissionRef: `RAP-${String(index + 1).padStart(4, "0")}`,
+            }),
+        updatedAt: now - 3 * DAY - index * HOUR,
         aiReview: {
           summary: `${team.project} addresses ${team.tagline.toLowerCase()} The team demonstrates a working end-to-end path rather than a prototype-only slice.`,
           strengths: team.highlights.slice(0, 2),

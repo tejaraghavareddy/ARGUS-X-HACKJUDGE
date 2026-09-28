@@ -119,7 +119,7 @@ export const myAssignments = query({
             : "—",
           techStack: team.techStack,
           submissionStatus: submission?.status ?? null,
-          hasDemoUrl: Boolean(team.demoUrl),
+          hasDemoUrl: Boolean(submission?.liveDemoUrl),
           hasAiReview: Boolean(submission?.aiReview),
           status: assignment.status,
           dueAt: assignment.dueAt,
@@ -235,8 +235,9 @@ export const reviewDetail = query({
             tagline: team.tagline,
             description: team.description,
             techStack: team.techStack,
-            repoUrl: team.repoUrl ?? null,
-            demoUrl: team.demoUrl ?? null,
+            repoUrl: submission?.githubUrl ?? null,
+            demoUrl: submission?.liveDemoUrl ?? null,
+            videoUrl: submission?.demoVideoUrl ?? null,
             trackName: team.trackId
               ? (track.find((t) => t._id === team.trackId)?.name ?? "—")
               : "—",

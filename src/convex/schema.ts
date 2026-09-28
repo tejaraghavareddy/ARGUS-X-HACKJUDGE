@@ -176,12 +176,14 @@ const schema = defineSchema(
       tagline: v.string(),
       description: v.string(),
       techStack: v.array(v.string()),
-      repoUrl: v.optional(v.string()),
-      demoUrl: v.optional(v.string()),
       createdAt: v.number(),
+      // Set when a participant self-serves the team, so "my team" resolution
+      // works before any other member is added.
+      createdBy: v.optional(v.id("users")),
     })
       .index("by_hackathon", ["hackathonId"])
-      .index("by_track", ["trackId"]),
+      .index("by_track", ["trackId"])
+      .index("by_createdBy", ["createdBy"]),
 
     // Membership is a join table so participants are only ever reachable
     // through their own team, which is what the participant queries rely on.
@@ -202,10 +204,40 @@ const schema = defineSchema(
       hackathonId: v.id("hackathons"),
       teamId: v.id("teams"),
       status: submissionStatusValidator,
-      abstract: v.string(),
+      // Human-readable identifier issued at final submit, e.g. "RPT-26-0042".
+      // This is what participants quote in correspondence, so it is generated
+      // once and never changes.
+      submissionRef: v.optional(v.string()),
+      // The structured form. Field names mirror the submission UI one-to-one.
+      problemStatement: v.optional(v.string()),
+      solutionDescription: v.optional(v.string()),
+      targetUsers: v.optional(v.string()),
+      keyFeatures: v.array(v.string()),
+      innovation: v.optional(v.string()),
+      expectedImpact: v.optional(v.string()),
+      // The technology stack is canonical on the team row (it is what the judge
+      // queue and the team registry read), so it is duplicated here only as an
+      // optional snapshot of what the participant declared at submit time.
+      technologyStack: v.optional(v.array(v.string())),
+      implementationDetails: v.optional(v.string()),
+      futureScope: v.optional(v.string()),
+      // External resources.
+      githubUrl: v.optional(v.string()),
+      liveDemoUrl: v.optional(v.string()),
+      demoVideoUrl: v.optional(v.string()),
+      // Retained from the original single-field form and still shown to judges.
+      abstract: v.optional(v.string()),
       highlights: v.array(v.string()),
       videoUrl: v.optional(v.string()),
       submittedAt: v.optional(v.number()),
+      updatedAt: v.optional(v.number()),
+      // Set when the submission is finalized. A locked submission rejects every
+      // participant write until an admin explicitly reopens it.
+      lockedAt: v.optional(v.number()),
+      reopenedAt: v.optional(v.number()),
+      reopenedBy: v.optional(v.id("users")),
+      // Why an admin reopened a locked submission, shown back to the team.
+      reopenNote: v.optional(v.string()),
       // Advisory only — see the aiReview note in this file.
       aiReview: v.optional(aiReview),
     })
@@ -257,6 +289,27 @@ const schema = defineSchema(
       .index("by_judge", ["judgeId"])
       .index("by_team", ["teamId"])
       .index("by_assignment", ["assignmentId"])
+      .index("by_hackathon", ["hackathonId"]),
+
+    // Uploaded supporting files. Binary content lives in Convex file storage
+    // under `storageId`; this table is the team's own index to it. It is
+    // separate from the submission document so a file can be removed without
+    // touching the form.
+    submissionFiles: defineTable({
+      hackathonId: v.id("hackathons"),
+      teamId: v.id("teams"),
+      submissionId: v.id("submissions"),
+      // One of "presentation" | "documentation" | "architecture" | "other".
+      kind: v.string(),
+      fileName: v.string(),
+      contentType: v.string(),
+      size: v.number(),
+      storageId: v.string(),
+      uploadedBy: v.id("users"),
+      uploadedAt: v.number(),
+    })
+      .index("by_submission", ["submissionId"])
+      .index("by_team", ["teamId"])
       .index("by_hackathon", ["hackathonId"]),
 
     // A judge declared unable to evaluate a specific team. Enforced on every

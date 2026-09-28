@@ -1,6 +1,8 @@
 import { Link, useParams } from "react-router";
-import { useQuery } from "convex/react";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { toast } from "sonner";
+import { ArrowLeft, ExternalLink, LockOpen } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { AppShell } from "@/components/app/AppShell";
@@ -12,6 +14,17 @@ import {
   StatusBadge,
 } from "@/components/app/Primitives";
 import { AdvisoryPanel } from "@/components/app/AdvisoryPanel";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   RECOMMENDATION_TONE,
   SUBMISSION_TONE,
@@ -26,6 +39,29 @@ import {
  */
 export default function AdminTeamDetail() {
   const { teamId } = useParams<{ teamId: string }>();
+  const adminReopen = useMutation(api.submissions.adminReopen);
+  // Id of the submission currently being reopened, or null. Holding it in state
+  // rather than a second query keeps the dialog bound to one known record.
+  const [reopenFor, setReopenFor] = useState<Id<"submissions"> | null>(null);
+  const [reopenNote, setReopenNote] = useState("");
+  const [reopening, setReopening] = useState(false);
+
+  const confirmReopen = async () => {
+    if (!reopenFor) return;
+    setReopening(true);
+    try {
+      await adminReopen({ submissionId: reopenFor, note: reopenNote });
+      toast.success("Submission reopened. The team can edit and resubmit.");
+      setReopenFor(null);
+      setReopenNote("");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not reopen.",
+      );
+    } finally {
+      setReopening(false);
+    }
+  };
   const team = teamId ? (teamId as Id<"teams">) : null;
   const data = useQuery(api.teams.adminTeamDetail, team ? { teamId: team } : "skip");
 
@@ -102,6 +138,12 @@ export default function AdminTeamDetail() {
       <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
         <div className="space-y-5">
           <SectionCard title="Submission">
+            {data.submission?.reopenedAt && (
+              <div className="mb-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+                Reopened {formatDate(data.submission.reopenedAt)} —{" "}
+                {data.submission.reopenNote}
+              </div>
+            )}
             <p className="text-sm leading-relaxed">{data.submission?.abstract}</p>
             {data.submission?.highlights.length ? (
               <ul className="mt-4 space-y-1.5">
@@ -136,6 +178,19 @@ export default function AdminTeamDetail() {
                   Repository <ExternalLink />
                 </a>
               )}
+              {data.submission &&
+                data.submission.status !== "draft" &&
+                reopenFor && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => setReopenFor(data.submission!.id)}
+                  >
+                    <LockOpen />
+                    Reopen submission
+                  </Button>
+                )}
             </div>
           </SectionCard>
 
@@ -234,6 +289,49 @@ export default function AdminTeamDetail() {
           )}
         </SectionCard>
       </div>
+
+      <Dialog
+        open={reopenFor !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReopenFor(null);
+            setReopenNote("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reopen this submission?</DialogTitle>
+            <DialogDescription>
+              The team will be able to edit and resubmit. The change is recorded
+              in the audit log, and the note below is shown to them as the
+              reason.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="reopen-note">Reason (shown to the team)</Label>
+            <Input
+              id="reopen-note"
+              value={reopenNote}
+              maxLength={200}
+              placeholder="e.g. The demo video link is broken"
+              onChange={(e) => setReopenNote(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setReopenFor(null)}
+              disabled={reopening}
+            >
+              Cancel
+            </Button>
+            <Button onClick={() => void confirmReopen()} disabled={reopening}>
+              {reopening ? "Reopening…" : "Reopen submission"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AppShell>
   );
 }
