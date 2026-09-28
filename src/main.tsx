@@ -18,6 +18,10 @@ const NoRole = lazy(() => import("./pages/NoRole.tsx"));
 const JudgeTeams = lazy(() => import("./pages/judge/JudgeTeams.tsx"));
 const JudgeReview = lazy(() => import("./pages/judge/JudgeReview.tsx"));
 const AdminOverview = lazy(() => import("./pages/admin/AdminOverview.tsx"));
+const AdminHackathon = lazy(() => import("./pages/admin/AdminHackathon.tsx"));
+const AdminRubric = lazy(() => import("./pages/admin/AdminRubric.tsx"));
+const AdminJudges = lazy(() => import("./pages/admin/AdminJudges.tsx"));
+const AdminAudit = lazy(() => import("./pages/admin/AdminAudit.tsx"));
 const AdminTeams = lazy(() => import("./pages/admin/AdminTeams.tsx"));
 const AdminTeamDetail = lazy(
   () => import("./pages/admin/AdminTeamDetail.tsx"),
@@ -160,6 +164,46 @@ createRoot(document.getElementById("root")!).render(
                   <RequireAuth>
                     <RequireRole allow={["admin"]}>
                       <AdminOverview />
+                    </RequireRole>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/admin/hackathon"
+                element={
+                  <RequireAuth>
+                    <RequireRole allow={["admin"]}>
+                      <AdminHackathon />
+                    </RequireRole>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/admin/rubric"
+                element={
+                  <RequireAuth>
+                    <RequireRole allow={["admin"]}>
+                      <AdminRubric />
+                    </RequireRole>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/admin/judges"
+                element={
+                  <RequireAuth>
+                    <RequireRole allow={["admin"]}>
+                      <AdminJudges />
+                    </RequireRole>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/admin/audit"
+                element={
+                  <RequireAuth>
+                    <RequireRole allow={["admin"]}>
+                      <AdminAudit />
                     </RequireRole>
                   </RequireAuth>
                 }

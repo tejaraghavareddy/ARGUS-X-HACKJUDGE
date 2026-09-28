@@ -93,29 +93,53 @@ const schema = defineSchema(
 
       role: v.optional(roleValidator),
       organization: v.optional(v.string()),
-      title: v.optional(v.string()),
-      // Judges are scored on calibration/reliability, so we track opt-in state
-      // and completed review counts for the admin oversight screens.
+      title: v.optional(v.string()),      // Judges are deactivated rather than deleted, so historic scorecards keep
+      // their author and assignment history stays auditable.
+      isActive: v.optional(v.boolean()),
       judgingCapacity: v.optional(v.number()),
-    })
-      .index("email", ["email"]) // index for the email. do not remove or modify
+    }).index("email", ["email"]) // index for the email. do not remove or modify
       .index("by_role", ["role"]),
 
     hackathons: defineTable({
       name: v.string(),
       slug: v.string(),
+      // Logo is a short text token (an emoji or short mark) or a URL. Storing
+      // it as text keeps the dashboard usable with no asset pipeline.
+      logo: v.optional(v.string()),
       tagline: v.string(),
       description: v.string(),
+      problemStatement: v.optional(v.string()),
+      eligibility: v.optional(v.string()),
+      rules: v.optional(v.string()),
       location: v.string(),
       status: hackathonStatusValidator,
+      // Exactly one hackathon is the live one; everything else is a draft or an
+      // archive. Every other query resolves its scope through this flag.
+      isCurrent: v.boolean(),
+      // Schedule. Kept as separate deadlines because organizers close each
+      // phase independently.
       startsAt: v.number(),
+      endsAt: v.number(),
+      registrationClosesAt: v.number(),
       submissionsCloseAt: v.number(),
+      judgingStartsAt: v.number(),
       judgingEndsAt: v.number(),
+      // Phase switches. An admin toggles these from the settings screen; the
+      // judge and participant surfaces read them.
+      registrationOpen: v.boolean(),
+      submissionsOpen: v.boolean(),
+      judgingOpen: v.boolean(),
+      // Blind judging hides team and member identity from judges entirely.
+      blindJudging: v.boolean(),
+      publicLeaderboard: v.boolean(),
+      resultsPublished: v.boolean(),
       resultsPublishedAt: v.optional(v.number()),
       maxTeamSize: v.number(),
+      createdAt: v.number(),
     })
       .index("by_slug", ["slug"])
-      .index("by_status", ["status"]),
+      .index("by_status", ["status"])
+      .index("by_current", ["isCurrent"]),
 
     tracks: defineTable({
       hackathonId: v.id("hackathons"),
@@ -126,13 +150,21 @@ const schema = defineSchema(
       order: v.number(),
     }).index("by_hackathon", ["hackathonId"]),
 
-    // Weighted rubric shared by every judge so scores stay comparable.
+    // Rubric shared by every judge so scores stay comparable.
+    //
+    // The rubric is fully admin-configurable: a criterion contributes exactly
+    // its `maxScore` to the total, and the total is the sum of every maxScore.
+    // Nothing about scoring is hard-coded, so an admin can reshape the whole
+    // rubric (see the default 20/20/20/15/15/10 = 100 example) without code
+    // changes. Because a score is locked once submitted, criteria are only
+    // editable while no final scorecard exists.
     judgingCriteria: defineTable({
       hackathonId: v.id("hackathons"),
       name: v.string(),
       description: v.string(),
+      // Shown to the judge next to the score buttons as evaluation guidance.
+      guidance: v.optional(v.string()),
       maxScore: v.number(),
-      weight: v.number(),
       order: v.number(),
     }).index("by_hackathon", ["hackathonId"]),
 
@@ -199,7 +231,7 @@ const schema = defineSchema(
       .index("by_hackathon", ["hackathonId"]),
 
     // One scorecard per (assignment). Only the owning judge can write it, and
-    // only via `judging.submitScore`; no other function may update it.
+    // only via `judging.saveScore`; no other function may update it.
     scores: defineTable({
       hackathonId: v.id("hackathons"),
       assignmentId: v.id("assignments"),
@@ -208,6 +240,8 @@ const schema = defineSchema(
       // criterion name -> awarded points (0..criterion maxScore)
       breakdown: v.record(v.string(), v.number()),
       totalScore: v.number(),
+      // Snapshot of the rubric ceiling at the time of scoring, so a later rubric
+      // change can never retroactively rescale a locked scorecard.
       maxTotalScore: v.number(),
       comments: v.string(),
       recommendation: v.union(
@@ -224,6 +258,38 @@ const schema = defineSchema(
       .index("by_team", ["teamId"])
       .index("by_assignment", ["assignmentId"])
       .index("by_hackathon", ["hackathonId"]),
+
+    // A judge declared unable to evaluate a specific team. Enforced on every
+    // judge-facing read and write, not just hidden in the UI.
+    judgeConflicts: defineTable({
+      hackathonId: v.id("hackathons"),
+      judgeId: v.id("users"),
+      teamId: v.id("teams"),
+      reason: v.optional(v.string()),
+      createdBy: v.id("users"),
+      createdAt: v.number(),
+    })
+      .index("by_hackathon", ["hackathonId"])
+      .index("by_judge", ["judgeId"])
+      .index("by_team", ["teamId"])
+      .index("by_judge_team", ["judgeId", "teamId"]),
+
+    // Append-only record of administrative actions. Written only by
+    // `logAudit`; nothing updates or deletes a row.
+    auditLog: defineTable({
+      hackathonId: v.id("hackathons"),
+      actorId: v.id("users"),
+      actorName: v.string(),
+      action: v.string(),
+      targetType: v.string(),
+      targetId: v.optional(v.string()),
+      targetLabel: v.optional(v.string()),
+      metadata: v.optional(v.record(v.string(), v.string())),
+      createdAt: v.number(),
+    })
+      .index("by_hackathon", ["hackathonId"])
+      .index("by_createdAt", ["createdAt"])
+      .index("by_actor", ["actorId"]),
   },
   {
     schemaValidation: false,

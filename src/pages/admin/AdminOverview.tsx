@@ -23,7 +23,7 @@ import {
   StatusBadge,
 } from "@/components/app/Primitives";
 import { Button } from "@/components/ui/button";
-import { HACKATHON_TONE, formatDate } from "@/lib/rapture";
+import { HACKATHON_TONE, formatDate, formatDateTime } from "@/lib/rapture";
 
 const TOOLTIP_STYLE = {
   border: "1px solid #e2e3e7",
@@ -79,7 +79,8 @@ export default function AdminOverview() {
     );
   }
 
-  const { totals, submissionBreakdown, byTrack, standings, judgeLoad } = data;
+  const { hackathon, totals, submissionBreakdown, byTrack, standings, judgeLoad, teamCoverage } =
+    data;
 
   const scoreDistribution = standings
     .filter((row) => row.average !== null)
@@ -88,10 +89,10 @@ export default function AdminOverview() {
   return (
     <AppShell role="admin">
       <PageHeader
-        title="Oversight"
-        description={`${data.hackathon.name} · submissions closed ${formatDate(
-          data.hackathon.submissionsCloseAt,
-        )} · judging ends ${formatDate(data.hackathon.judgingEndsAt)}`}
+        title={data.hackathon.name}
+        description={`${data.hackathon.tagline} · judging ends ${formatDate(
+          data.hackathon.judgingEndsAt,
+        )} · ${data.rubric.criteria.length} rubric criteria worth ${data.rubric.total} points`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge
@@ -115,17 +116,49 @@ export default function AdminOverview() {
           hint={`${totals.participants} participants`}
           tone="primary"
         />
-        <StatTile label="Judges" value={totals.judges} />
         <StatTile
-          label="Scorecards in"
-          value={totals.finalizedScorecards}
-          hint={`of ${totals.assignments} assigned`}
+          label="Submissions"
+          value={totals.submittedSubmissions}
+          hint={`${totals.submissions} records`}
+        />
+        <StatTile
+          label="Judges"
+          value={totals.judges}
+          hint={`${totals.activeJudges} active`}
+        />
+        <StatTile
+          label="Judging complete"
+          value={`${totals.completionPct}%`}
+          hint={`${totals.completed} of ${totals.assignments} scorecards`}
+        />
+      </div>
+
+      <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatTile
+          label="Pending evaluations"
+          value={totals.pendingEvaluations}
+          hint="scorecards not yet finalized"
+          tone={totals.pendingEvaluations ? "accent" : "surface"}
         />
         <StatTile
           label="Unassigned teams"
           value={totals.unassignedTeams}
           hint={totals.unassignedTeams ? "Needs a judge" : "Fully covered"}
-          tone={totals.unassignedTeams ? "accent" : "surface"}
+        />
+        <StatTile
+          label="Declared conflicts"
+          value={totals.conflicts}
+          hint="judges stood down"
+        />
+        <StatTile
+          label="Results"
+          value={hackathon.resultsPublished ? "Published" : "Unpublished"}
+          hint={
+            hackathon.resultsPublishedAt
+              ? formatDateTime(hackathon.resultsPublishedAt)
+              : "not released to participants"
+          }
+          tone={hackathon.resultsPublished ? "accent" : "surface"}
         />
       </div>
 
@@ -253,6 +286,62 @@ export default function AdminOverview() {
           </div>
         </SectionCard>
       </div>
+
+      <SectionCard
+        className="mt-5"
+        title="Judging coverage"
+        description="How many judges each team has, how many have finished, and where conflicts stand the panel down."
+      >
+        <div className="-mx-5 overflow-x-auto px-5">
+          <table className="data-table min-w-[700px]">
+            <thead>
+              <tr>
+                <th>Team</th>
+                <th>Track</th>
+                <th className="text-right">Judges</th>
+                <th className="w-44">Completed</th>
+                <th className="text-right">Conflicts</th>
+                <th className="text-right">Average</th>
+              </tr>
+            </thead>
+            <tbody>
+              {teamCoverage.map((row) => (
+                <tr key={row.teamId}>
+                  <td>
+                    <Link
+                      to={`/admin/teams/${row.teamId}`}
+                      className="font-medium hover:underline"
+                    >
+                      {row.projectName}
+                    </Link>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {row.teamName}
+                    </span>
+                  </td>
+                  <td className="text-sm text-muted-foreground">
+                    {row.trackName}
+                  </td>
+                  <td className="tabular text-right">
+                    {row.assigned}
+                    {row.assigned === 0 && (
+                      <span className="ml-2 rounded-full bg-warning-soft px-1.5 py-0.5 text-[0.625rem] font-semibold text-warning-foreground">
+                        none
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <BlockProgress done={row.completed} total={row.assigned} />
+                  </td>
+                  <td className="tabular text-right">{row.conflicts}</td>
+                  <td className="tabular text-right text-base font-semibold">
+                    {row.average ?? "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </SectionCard>
 
       <SectionCard
         className="mt-5"

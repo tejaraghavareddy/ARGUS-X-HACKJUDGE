@@ -1,36 +1,88 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type QueryCtx } from "./_generated/server";
 import { requireRole } from "./lib/authorization";
+import { getCurrentHackathon } from "./lib/resolve";
+import { logAudit } from "./lib/audit";
 import { ASSIGNMENT_STATUS, ROLES, SUBMISSION_STATUS } from "./schema";
+import type { Id } from "./_generated/dataModel";
 
 /**
  * Judge workspace.
  *
- * The authorization rule enforced throughout: a judge may only ever see teams
- * they have an `assignments` row for, and may only ever write their own
- * scorecard. Both are checked on the server on every read and every write, so
- * nothing here depends on the client hiding a link.
+ * Authorization rules enforced throughout:
+ *  1. A judge sees only teams they have an `assignments` row for.
+ *  2. A declared conflict of interest removes the team from their queue
+ *     entirely and blocks both reading and writing it.
+ *  3. A judge may only ever write their own scorecard.
+ *
+ * All three are checked server-side on every read and write, so none of them
+ * depend on the client hiding a link.
  */
+
+/**
+ * Anonymous, stable labels used when blind judging is on.
+ *
+ * Derived from creation order so the same submission always maps to the same
+ * anonymous label — otherwise "Submission 3" would shift between page loads
+ * and judges could not keep notes on a particular project.
+ */
+type BlindLabels = Map<string, string>;
+
+async function blindLabelsFor(
+  ctx: QueryCtx,
+  hackathonId: Id<"hackathons">,
+): Promise<BlindLabels> {
+  const teams = await ctx.db
+    .query("teams")
+    .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathonId))
+    .collect();
+
+  const sorted = [...teams].sort((a, b) => a.createdAt - b.createdAt);
+  const labels = new Map<string, string>();
+  sorted.forEach((team, index) => {
+    labels.set(team._id as string, `Submission ${index + 1}`);
+  });
+  return labels;
+}
+
 export const myAssignments = query({
   args: {},
   handler: async (ctx) => {
     const judge = await requireRole(ctx, ROLES.JUDGE);
+    const hackathon = await getCurrentHackathon(ctx);
+    if (!hackathon) return { criteria: [], assignments: [], summary: emptySummary() };
 
-    const [assignments, criteria] = await Promise.all([
+    const [assignments, criteria, conflicts, tracks] = await Promise.all([
       ctx.db
         .query("assignments")
         .withIndex("by_judge", (q) => q.eq("judgeId", judge._id))
         .collect(),
       ctx.db
         .query("judgingCriteria")
-        .collect()
-        .then((rows) => rows.sort((a, b) => a.order - b.order)),
+        .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
+        .collect(),
+      ctx.db
+        .query("judgeConflicts")
+        .withIndex("by_judge", (q) => q.eq("judgeId", judge._id))
+        .collect(),
+      ctx.db
+        .query("tracks")
+        .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
+        .collect(),
     ]);
 
-    const teamIds = assignments.map((a) => a.teamId);
-    const [teams, tracks, submissions, myScores] = await Promise.all([
+    const conflicted = new Set(conflicts.map((c) => c.teamId as string));
+    const trackById = new Map(tracks.map((t) => [t._id, t]));
+    const blind = hackathon.blindJudging;
+    const labels = blind ? await blindLabelsFor(ctx, hackathon._id) : new Map();
+
+    // A conflicted assignment stays in the database (so the admin can see who
+    // was stood down), but it is filtered out of the judge's queue entirely.
+    const visible = assignments.filter((a) => !conflicted.has(a.teamId as string));
+
+    const teamIds = visible.map((a) => a.teamId);
+    const [teams, submissions, myScores] = await Promise.all([
       Promise.all(teamIds.map((id) => ctx.db.get(id))),
-      ctx.db.query("tracks").collect(),
       Promise.all(
         teamIds.map((id) =>
           ctx.db
@@ -45,12 +97,11 @@ export const myAssignments = query({
         .collect(),
     ]);
 
-    const trackById = new Map(tracks.map((t) => [t._id, t]));
     const scoreByAssignment = new Map(
       myScores.map((s) => [s.assignmentId as string, s]),
     );
 
-    const rows = assignments
+    const rows = visible
       .map((assignment, index) => {
         const team = teams[index];
         if (!team) return null;
@@ -60,7 +111,7 @@ export const myAssignments = query({
         return {
           assignmentId: assignment._id,
           teamId: team._id,
-          teamName: team.name,
+          teamName: blind ? (labels.get(team._id as string) ?? "Submission") : team.name,
           projectName: team.projectName,
           tagline: team.tagline,
           trackName: team.trackId
@@ -83,8 +134,10 @@ export const myAssignments = query({
       .sort((a, b) => a.teamName.localeCompare(b.teamName));
 
     return {
-      criteria,
+      criteria: criteria.sort((a, b) => a.order - b.order),
       assignments: rows,
+      blindJudging: blind,
+      judgingOpen: hackathon.judgingOpen,
       summary: {
         total: rows.length,
         submitted: rows.filter((r) => r.status === ASSIGNMENT_STATUS.SUBMITTED)
@@ -100,11 +153,17 @@ export const myAssignments = query({
   },
 });
 
+function emptySummary() {
+  return { total: 0, submitted: 0, inProgress: 0, notStarted: 0 };
+}
+
 /** Full review context for one assigned team. */
 export const reviewDetail = query({
   args: { teamId: v.id("teams") },
   handler: async (ctx, args) => {
     const judge = await requireRole(ctx, ROLES.JUDGE);
+    const hackathon = await getCurrentHackathon(ctx);
+    if (!hackathon) throw new Error("No hackathon is currently active.");
 
     const assignment = await ctx.db
       .query("assignments")
@@ -118,29 +177,45 @@ export const reviewDetail = query({
       throw new Error("You are not assigned to this team.");
     }
 
-    const [team, submission, track, criteria, members, myScore] =
-      await Promise.all([
-        ctx.db.get(args.teamId),
-        ctx.db
-          .query("submissions")
-          .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
-          .unique(),
-        ctx.db.query("tracks").collect(),
-        ctx.db
-          .query("judgingCriteria")
-          .withIndex("by_hackathon", (q) =>
-        q.eq("hackathonId", assignment.hackathonId),
+    // A declared conflict blocks the read outright, not just the write.
+    const conflict = await ctx.db
+      .query("judgeConflicts")
+      .withIndex("by_judge_team", (q) =>
+        q.eq("judgeId", judge._id).eq("teamId", args.teamId),
       )
-          .collect(),
-        ctx.db
-          .query("teamMembers")
-          .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
-          .collect(),
-        ctx.db
-          .query("scores")
-          .withIndex("by_assignment", (q) => q.eq("assignmentId", assignment._id))
-          .unique(),
-      ]);
+      .unique();
+    if (conflict) {
+      throw new Error(
+        "You have been stood down from this submission due to a declared conflict of interest.",
+      );
+    }
+
+    const [team, submission, track, criteria, members, myScore] = await Promise.all([
+      ctx.db.get(args.teamId),
+      ctx.db
+        .query("submissions")
+        .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+        .unique(),
+      ctx.db
+        .query("tracks")
+        .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
+        .collect(),
+      ctx.db
+        .query("judgingCriteria")
+        .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
+        .collect(),
+      ctx.db
+        .query("teamMembers")
+        .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+        .collect(),
+      ctx.db
+        .query("scores")
+        .withIndex("by_assignment", (q) => q.eq("assignmentId", assignment._id))
+        .unique(),
+    ]);
+
+    const blind = hackathon.blindJudging;
+    const labels = blind ? await blindLabelsFor(ctx, hackathon._id) : new Map();
 
     return {
       assignment: {
@@ -148,10 +223,14 @@ export const reviewDetail = query({
         status: assignment.status,
         dueAt: assignment.dueAt,
       },
+      blindJudging: blind,
+      judgingOpen: hackathon.judgingOpen,
       team: team
         ? {
             id: team._id,
-            name: team.name,
+            name: blind
+              ? (labels.get(team._id as string) ?? "Submission")
+              : team.name,
             projectName: team.projectName,
             tagline: team.tagline,
             description: team.description,
@@ -163,11 +242,14 @@ export const reviewDetail = query({
               : "—",
           }
         : null,
-      members: members.map((m) => ({
-        name: m.name,
-        role: m.role,
-        isLead: m.isLead,
-      })),
+      // Under blind judging the roster is withheld entirely.
+      members: blind
+        ? []
+        : members.map((m) => ({
+            name: m.name,
+            role: m.role,
+            isLead: m.isLead,
+          })),
       submission: submission
         ? {
             status: submission.status,
@@ -184,6 +266,7 @@ export const reviewDetail = query({
         ? {
             breakdown: myScore.breakdown,
             totalScore: myScore.totalScore,
+            maxTotalScore: myScore.maxTotalScore,
             comments: myScore.comments,
             recommendation: myScore.recommendation,
             isFinal: myScore.isFinal,
@@ -194,17 +277,26 @@ export const reviewDetail = query({
   },
 });
 
+/**
+ * Total a scorecard.
+ *
+ * A criterion contributes exactly the points awarded, so the ceiling is the
+ * sum of every criterion's `maxScore`. Nothing about the rubric is assumed
+ * here — an admin reshaping it changes the denominator automatically.
+ */
 function computeTotal(
   breakdown: Record<string, number>,
-  criteria: { name: string; maxScore: number; weight: number }[],
-): number {
-  const total = criteria.reduce((sum, criterion) => {
+  criteria: { name: string; maxScore: number }[],
+): { total: number; maxTotal: number } {
+  let total = 0;
+  let maxTotal = 0;
+  for (const criterion of criteria) {
+    maxTotal += criterion.maxScore;
     const raw = breakdown[criterion.name];
-    if (typeof raw !== "number" || !Number.isFinite(raw)) return sum;
-    const clamped = Math.max(0, Math.min(criterion.maxScore, raw));
-    return sum + (clamped / criterion.maxScore) * criterion.weight;
-  }, 0);
-  return Number(total.toFixed(2));
+    if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+    total += Math.max(0, Math.min(criterion.maxScore, raw));
+  }
+  return { total: Number(total.toFixed(2)), maxTotal };
 }
 
 const scoreArgs = {
@@ -221,11 +313,13 @@ const scoreArgs = {
 /**
  * Save (draft) or submit (finalize) the judge's own scorecard.
  *
- * Two rules are enforced here and nowhere else in the codebase:
+ * Rules enforced here and nowhere else:
  *  1. The caller must be the judge the assignment belongs to.
- *  2. Once finalized, the score is locked. A judge cannot quietly revise a
- *     scorecard they already submitted, and no AI or admin path can write to it
- *     at all — `scores` is only ever written by this mutation.
+ *  2. A declared conflict of interest blocks writing entirely.
+ *  3. A deactivated judge cannot submit.
+ *  4. Final submission requires the judging window to be open.
+ *  5. Once finalized the scorecard is immutable — no silent revisions, by a
+ *     judge, an admin, or anything else.
  */
 export const saveScore = mutation({
   args: {
@@ -234,6 +328,14 @@ export const saveScore = mutation({
   },
   handler: async (ctx, args) => {
     const judge = await requireRole(ctx, ROLES.JUDGE);
+    const hackathon = await getCurrentHackathon(ctx);
+    if (!hackathon) throw new Error("No hackathon is currently active.");
+
+    if (judge.isActive === false) {
+      throw new Error(
+        "Your judging access has been deactivated by an organizer.",
+      );
+    }
 
     const assignment = await ctx.db
       .query("assignments")
@@ -246,11 +348,27 @@ export const saveScore = mutation({
       throw new Error("You are not assigned to this team.");
     }
 
+    const conflict = await ctx.db
+      .query("judgeConflicts")
+      .withIndex("by_judge_team", (q) =>
+        q.eq("judgeId", judge._id).eq("teamId", args.teamId),
+      )
+      .unique();
+    if (conflict) {
+      throw new Error(
+        "You have been stood down from this submission due to a declared conflict of interest.",
+      );
+    }
+
+    if (args.isFinal && !hackathon.judgingOpen) {
+      throw new Error(
+        "Judging is not open right now. You can still save a draft.",
+      );
+    }
+
     const criteria = await ctx.db
       .query("judgingCriteria")
-      .withIndex("by_hackathon", (q) =>
-        q.eq("hackathonId", assignment.hackathonId),
-      )
+      .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
       .collect();
 
     if (criteria.length === 0) {
@@ -266,7 +384,20 @@ export const saveScore = mutation({
       }
     }
 
-    const totalScore = computeTotal(args.breakdown, criteria);
+    if (args.isFinal) {
+      const missing = criteria.filter(
+        (c) => typeof args.breakdown[c.name] !== "number",
+      );
+      if (missing.length > 0) {
+        throw new Error(
+          `Score every criterion before submitting. Missing: ${missing
+            .map((c) => c.name)
+            .join(", ")}`,
+        );
+      }
+    }
+
+    const { total, maxTotal } = computeTotal(args.breakdown, criteria);
     const now = Date.now();
 
     const existing = await ctx.db
@@ -283,7 +414,8 @@ export const saveScore = mutation({
     if (existing) {
       await ctx.db.patch(existing._id, {
         breakdown: args.breakdown,
-        totalScore,
+        totalScore: total,
+        maxTotalScore: maxTotal,
         comments: args.comments,
         recommendation: args.recommendation,
         isFinal: args.isFinal,
@@ -292,13 +424,13 @@ export const saveScore = mutation({
       });
     } else {
       await ctx.db.insert("scores", {
-        hackathonId: assignment.hackathonId,
+        hackathonId: hackathon._id,
         assignmentId: assignment._id,
         teamId: args.teamId,
         judgeId: judge._id,
         breakdown: args.breakdown,
-        totalScore,
-        maxTotalScore: 100,
+        totalScore: total,
+        maxTotalScore: maxTotal,
         comments: args.comments,
         recommendation: args.recommendation,
         isFinal: args.isFinal,
@@ -325,8 +457,17 @@ export const saveScore = mutation({
           status: SUBMISSION_STATUS.UNDER_REVIEW,
         });
       }
+
+      await logAudit(ctx, {
+        hackathonId: hackathon._id,
+        actor: judge,
+        action: "score.submitted",
+        targetType: "team",
+        targetId: args.teamId,
+        metadata: { total: String(total) },
+      });
     }
 
-    return { totalScore };
+    return { totalScore: total, maxTotalScore: maxTotal };
   },
 });

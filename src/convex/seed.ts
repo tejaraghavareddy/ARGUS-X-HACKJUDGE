@@ -283,30 +283,51 @@ const TRACKS = [
   },
 ];
 
+// The default rubric from the product brief. Nothing here is hard-coded into
+// scoring — this is simply the set the demo hackathon starts with, and an admin
+// can reshape all of it from the rubric builder.
 const CRITERIA = [
   {
     name: "Innovation",
     description: "Originality of the approach and the idea itself.",
-    maxScore: 10,
-    weight: 25,
+    guidance:
+      "Does the team have a point of view, or have they assembled something that already exists? A familiar stack is fine; a familiar idea is not.",
+    maxScore: 20,
   },
   {
-    name: "Technical Execution",
+    name: "Technical Complexity",
     description: "Does it work, and is it built soundly?",
-    maxScore: 10,
-    weight: 30,
+    guidance:
+      "Judge the working demo, not the slide. Reward honest handling of failure over a happy path that only works on the demo data.",
+    maxScore: 20,
   },
   {
     name: "Impact",
     description: "Meaningful difference for real people.",
-    maxScore: 10,
-    weight: 25,
+    guidance:
+      "Who specifically is better off, and by how much? A narrow, real beneficiary beats a broad, hypothetical one.",
+    maxScore: 20,
   },
   {
-    name: "Product Design",
+    name: "User Experience",
     description: "Usability, clarity and craft of the experience.",
+    guidance:
+      "Could a stranger complete the core task unaided? Penalise features that are visible but not reachable.",
+    maxScore: 15,
+  },
+  {
+    name: "Feasibility",
+    description: "Could this realistically keep running?",
+    guidance:
+      "Consider cost, data access and the team's own runway. Be sceptical of anything that only works on one laptop.",
+    maxScore: 15,
+  },
+  {
+    name: "Presentation",
+    description: "Clarity of the pitch and the demo.",
+    guidance:
+      "Structure, timing and whether the team can answer a hard follow-up without flinching.",
     maxScore: 10,
-    weight: 20,
   },
 ];
 
@@ -484,19 +505,86 @@ export const seed = mutation({
       }
     }
 
+    // Reclaim abandoned records left behind by earlier demo runs. This is
+    // deliberately conservative: a hackathon is only removed if it has no
+    // teams and no scores, and a judge only if they never scored anything.
+    // Anything with real work in it is left alone.
+    for (const other of await ctx.db.query("hackathons").collect()) {
+      if (other.slug === HACKATHON_SLUG) continue;
+      const [otherTeams, otherScores] = await Promise.all([
+        ctx.db
+          .query("teams")
+          .withIndex("by_hackathon", (q) => q.eq("hackathonId", other._id))
+          .collect(),
+        ctx.db
+          .query("scores")
+          .withIndex("by_hackathon", (q) => q.eq("hackathonId", other._id))
+          .collect(),
+      ]);
+      if (otherTeams.length === 0 && otherScores.length === 0) {
+        await ctx.db.delete(other._id);
+      }
+    }
+
+    const seededJudgeEmails = new Set(JUDGES.map((j) => j.email));
+    for (const user of await ctx.db
+      .query("users")
+      .withIndex("by_role", (q) => q.eq("role", "judge"))
+      .collect()) {
+      if (user.email && seededJudgeEmails.has(user.email)) continue;
+      const theirScores = await ctx.db
+        .query("scores")
+        .withIndex("by_judge", (q) => q.eq("judgeId", user._id))
+        .collect();
+      if (theirScores.length > 0) continue;
+
+      const theirAssignments = await ctx.db
+        .query("assignments")
+        .withIndex("by_judge", (q) => q.eq("judgeId", user._id))
+        .collect();
+      for (const row of theirAssignments) await ctx.db.delete(row._id);
+
+      const accounts = await ctx.db
+        .query("authAccounts")
+        .withIndex("userIdAndProvider", (q) =>
+          q.eq("userId", user._id).eq("provider", "password"),
+        )
+        .collect();
+      for (const account of accounts) await ctx.db.delete(account._id);
+      await ctx.db.delete(user._id);
+    }
+
     // --- Hackathon ---------------------------------------------------------
     const hackathonId = await ctx.db.insert("hackathons", {
       name: "Rapture 2026",
       slug: HACKATHON_SLUG,
+      logo: "RJ",
       tagline: "Build something worth shipping in 36 hours.",
       description:
         "Rapture is a national-level build sprint for teams working on civic, climate, health and accessibility problems. Ten shortlisted teams advance to the national final, where the judging rubric and standards are identical to this round.",
+      problemStatement:
+        "Public-interest infrastructure in India is fragmented: the people who need it most rarely control the tools meant to serve them. Build a tool that moves one of those decisions closer to the people making it.",
+      eligibility:
+        "Open to teams of 2-4. At least one member must be currently enrolled at, or employed by, an accredited institution. Teams may have exactly one lead. Prior hackathon wins are not disqualifying, but the previous build cannot be resubmitted.",
+      rules:
+        "All code must be committed to the public repository by the submission deadline. Third-party APIs must be disclosed. Teams may not include a team member who has declared a conflict of interest. Judging follows the published rubric; scores are final once submitted.",
       location: "Bengaluru + remote",
       status: "judging",
+      isCurrent: true,
       startsAt: now - 9 * DAY,
+      endsAt: now - 3 * DAY,
+      registrationClosesAt: now - 8 * DAY,
       submissionsCloseAt: now - 3 * DAY,
+      judgingStartsAt: now - 3 * DAY,
       judgingEndsAt: now + 2 * DAY,
+      registrationOpen: false,
+      submissionsOpen: false,
+      judgingOpen: true,
+      blindJudging: false,
+      publicLeaderboard: true,
+      resultsPublished: false,
       maxTeamSize: 4,
+      createdAt: now - 30 * DAY,
     });
 
     // --- Tracks + rubric ---------------------------------------------------
@@ -517,8 +605,8 @@ export const seed = mutation({
         hackathonId,
         name: criterion.name,
         description: criterion.description,
+        guidance: criterion.guidance,
         maxScore: criterion.maxScore,
-        weight: criterion.weight,
         order: index,
       });
     }
@@ -543,7 +631,8 @@ export const seed = mutation({
       return id;
     };
 
-    for (const admin of ADMINS) await upsertUser(admin);
+    const adminIds: Id<"users">[] = [];
+    for (const admin of ADMINS) adminIds.push(await upsertUser(admin));
     const judgeIds: Id<"users">[] = [];
     for (const judge of JUDGES) judgeIds.push(await upsertUser(judge));
 
@@ -636,83 +725,221 @@ export const seed = mutation({
     }
 
     // --- Judge assignments + a spread of scorecards ------------------------
-    // Each judge gets up to 3 teams, round-robin across 10 teams. Team 10 is
-    // intentionally left unassigned so admins can see coverage gaps.
+    // Teams are dealt round-robin so every judge carries a comparable load,
+    // and a second judge is added to half of them so multi-judge review is
+    // genuinely exercised. The last team is left unassigned so admins can see
+    // a real coverage gap on the dashboard.
     const assignableTeamCount = TEAMS.length - 1;
+    const rubricMax = CRITERIA.reduce((sum, c) => sum + c.maxScore, 0);
     let scorecards = 0;
     let finalized = 0;
 
+    const addAssignment = async (judgeId: Id<"users">, teamIndex: number) => {
+      if (teamIndex >= assignableTeamCount) return null;
+      return await ctx.db.insert("assignments", {
+        hackathonId,
+        judgeId,
+        teamId: teamIds[teamIndex],
+        status: "not_started",
+        assignedAt: now - 3 * DAY,
+        dueAt: now + 2 * DAY,
+      });
+    };
+
+    // (judge index, team index) pairs to seed.
+    const pairs: [number, number][] = [];
     for (let j = 0; j < judgeIds.length; j++) {
-      const judgeId = judgeIds[j];
-      // Deal round-robin so every judge carries a comparable load instead of
-      // the first judge taking all the work.
       for (let slot = 0; slot < 2; slot++) {
-        const teamIndex = j + slot * judgeIds.length;
-        if (teamIndex >= assignableTeamCount) continue;
-        const teamId = teamIds[teamIndex];
-
-        const assignmentId = await ctx.db.insert("assignments", {
-          hackathonId,
-          judgeId,
-          teamId,
-          status: "not_started",
-          assignedAt: now - 3 * DAY,
-          dueAt: now + 2 * DAY,
-        });
-
-        // Every judge gets one scorecard finalized and one left in progress, so
-        // the queue shows real mixed state rather than a suspiciously uniform
-        // column.
-
-        const breakdown: Record<string, number> = {};
-        for (const criterion of CRITERIA) {
-          const base = 5 + Math.floor(random() * 5);
-          breakdown[criterion.name] = Math.min(
-            criterion.maxScore,
-            Math.max(3, base + (random() > 0.6 ? 1 : 0)),
-          );
-        }
-
-        const weightedTotal = CRITERIA.reduce((sum, criterion) => {
-          const score = breakdown[criterion.name] ?? 0;
-          return sum + (score / criterion.maxScore) * criterion.weight;
-        }, 0);
-
-        const isFinal = (j + slot * judgeIds.length) % 3 !== 0;
-        if (isFinal) finalized += 1;
-        scorecards += 1;
-
-        await ctx.db.insert("scores", {
-          hackathonId,
-          assignmentId,
-          teamId,
-          judgeId,
-          breakdown,
-          totalScore: Number(weightedTotal.toFixed(2)),
-          maxTotalScore: 100,
-          comments:
-            "Clear problem framing and a working demo. The team was honest about the limits of the current build, which helped the review.",
-          recommendation:
-            weightedTotal > 72 ? "advance" : weightedTotal > 58 ? "hold" : "reject",
-          isFinal,
-          updatedAt: now - 2 * DAY + scorecards * HOUR,
-          ...(isFinal ? { submittedAt: now - 2 * DAY + scorecards * HOUR } : {}),
-        });
-
-        await ctx.db.patch(assignmentId, {
-          status: isFinal ? "submitted" : "in_progress",
-        });
+        pairs.push([j, j + slot * judgeIds.length]);
       }
+    }
+    // A second, independent judge on the even-indexed teams.
+    for (let teamIndex = 0; teamIndex < assignableTeamCount; teamIndex += 2) {
+      pairs.push([(teamIndex + 1) % judgeIds.length, teamIndex]);
+    }
+
+    const seen = new Set<string>();
+    let pairIndex = 0;
+    for (const [j, teamIndex] of pairs) {
+      if (teamIndex >= assignableTeamCount) continue;
+      const key = `${j}:${teamIndex}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const judgeId = judgeIds[j];
+      const teamId = teamIds[teamIndex];
+      const assignmentId = await addAssignment(judgeId, teamIndex);
+      if (!assignmentId) continue;
+
+      // A spread of progress: a majority finalized, a few drafts, a few
+      // untouched, so the dashboards and progress bars have real numbers.
+      const isFinal = pairIndex % 3 !== 0;
+      const isDraft = pairIndex % 5 === 0;
+      pairIndex += 1;
+
+      if (!isFinal && !isDraft) continue;
+
+      // A criterion contributes exactly the points awarded, so the ceiling is
+      // the sum of every maxScore. Scores are spread across that range so the
+      // seeded standings look like real judging rather than all-100s.
+      const breakdown: Record<string, number> = {};
+      for (const criterion of CRITERIA) {
+        const ratio = 0.5 + random() * 0.5;
+        breakdown[criterion.name] = Math.max(
+          1,
+          Math.min(criterion.maxScore, Math.round(criterion.maxScore * ratio)),
+        );
+      }
+
+      const total = Number(
+        CRITERIA.reduce(
+          (sum, criterion) => sum + (breakdown[criterion.name] ?? 0),
+          0,
+        ).toFixed(2),
+      );
+
+      if (isFinal) finalized += 1;
+      scorecards += 1;
+
+      await ctx.db.insert("scores", {
+        hackathonId,
+        assignmentId,
+        teamId,
+        judgeId,
+        breakdown,
+        totalScore: total,
+        maxTotalScore: rubricMax,
+        comments: isFinal
+          ? "Clear problem framing and a working demo. The team was honest about the limits of the current build, which helped the review."
+          : "Still working through the rubric — early read is that the demo is strong but the scaling story is thin.",
+        recommendation:
+          total > rubricMax * 0.72
+            ? "advance"
+            : total > rubricMax * 0.58
+              ? "hold"
+              : "reject",
+        isFinal,
+        updatedAt: now - 2 * DAY + scorecards * HOUR,
+        ...(isFinal ? { submittedAt: now - 2 * DAY + scorecards * HOUR } : {}),
+      });
+
+      await ctx.db.patch(assignmentId, {
+        status: isFinal ? "submitted" : "in_progress",
+      });
+    }
+
+    // --- Conflict of interest --------------------------------------------
+    // Declaring a conflict stands a judge down, which also removes the pairing
+    // from their queue. The judge named here is one whose assignment to this
+    // team is deleted, exactly as `judges.declareConflict` would do.
+    const conflictJudge = judgeIds[3];
+    const conflictTeamIndex = 1;
+    await ctx.db.insert("judgeConflicts", {
+      hackathonId,
+      judgeId: conflictJudge,
+      teamId: teamIds[conflictTeamIndex],
+      reason:
+        "Judge is a former advisor to this team's university lab; declared at onboarding.",
+      createdBy: adminIds[2],
+      createdAt: now - 2 * DAY,
+    });
+    const conflictedAssignment = await ctx.db
+      .query("assignments")
+      .withIndex("by_judge_team", (q) =>
+        q.eq("judgeId", conflictJudge).eq("teamId", teamIds[conflictTeamIndex]),
+      )
+      .unique();
+    if (conflictedAssignment) {
+      await ctx.db.delete(conflictedAssignment._id);
+    }
+
+    // --- A deactivated judge ----------------------------------------------
+    // Kept active in the roster with their history intact, so the admin UI has
+    // a realistic "inactive" row to show.
+    await ctx.db.patch(judgeIds[4], { isActive: false });
+
+    // --- A second, not-yet-live hackathon ---------------------------------
+    const draftHackathonId = await ctx.db.insert("hackathons", {
+      name: "Rapture 2027",
+      slug: `${HACKATHON_SLUG}-draft`,
+      logo: "R7",
+      tagline: "Same standards, next cohort.",
+      description:
+        "The 2027 edition. Planning is under way; the rubric and tracks will be confirmed once this round's results are published.",
+      problemStatement: "To be announced.",
+      eligibility: "To be announced.",
+      rules: "To be announced.",
+      location: "Bengaluru + remote",
+      status: "registration",
+      isCurrent: false,
+      startsAt: now + 120 * DAY,
+      endsAt: now + 122 * DAY,
+      registrationClosesAt: now + 119 * DAY,
+      submissionsCloseAt: now + 122 * DAY,
+      judgingStartsAt: now + 122 * DAY,
+      judgingEndsAt: now + 125 * DAY,
+      registrationOpen: false,
+      submissionsOpen: false,
+      judgingOpen: false,
+      blindJudging: true,
+      publicLeaderboard: false,
+      resultsPublished: false,
+      maxTeamSize: 4,
+      createdAt: now - 4 * DAY,
+    });
+
+    // --- Audit history ----------------------------------------------------
+    // Seeded so the log reads like a real event rather than an empty table.
+    const auditActorId = adminIds[0];
+    const auditEntries: [number, string, string, string, string, string?][] = [
+      [now - 21 * DAY, "hackathon.created", "hackathon", hackathonId, "Rapture 2026"],
+      [now - 20 * DAY, "rubric.criterion_created", "criterion", "", "Innovation"],
+      [now - 20 * DAY, "rubric.criterion_created", "criterion", "", "Technical Complexity"],
+      [now - 20 * DAY, "rubric.criterion_created", "criterion", "", "Impact"],
+      [now - 20 * DAY, "rubric.criterion_created", "criterion", "", "User Experience"],
+      [now - 20 * DAY, "rubric.criterion_created", "criterion", "", "Feasibility"],
+      [now - 20 * DAY, "rubric.criterion_created", "criterion", "", "Presentation"],
+      [now - 14 * DAY, "judge.created", "judge", judgeIds[0], "Dr. Elena Vasquez"],
+      [now - 14 * DAY, "judge.created", "judge", judgeIds[1], "Rahul Menon"],
+      [now - 13 * DAY, "judge.created", "judge", judgeIds[2], "Grace Okonkwo"],
+      [now - 13 * DAY, "judge.created", "judge", judgeIds[3], "Tomás Bergman"],
+      [now - 12 * DAY, "judge.created", "judge", judgeIds[4], "Priya Nandakumar"],
+      [now - 9 * DAY, "settings.toggled", "hackathon", hackathonId, "Registration opened", "Registration=true"],
+      [now - 3 * DAY, "settings.toggled", "hackathon", hackathonId, "Submissions closed", "Submissions=false"],
+      [now - 3 * DAY, "settings.toggled", "hackathon", hackathonId, "Judging started", "Judging=true"],
+      [now - 2 * DAY, "assignment.created", "team", "", "Team Quartz", "judge=Dr. Elena Vasquez"],
+      [now - 2 * DAY, "conflict.declared", "team", teamIds[conflictTeamIndex], "Team Quartz", "reason=former advisor"],
+      [now - 1 * DAY, "judge.deactivated", "judge", judgeIds[4], "Priya Nandakumar"],
+      [now - 1 * DAY, "hackathon.created", "hackathon", draftHackathonId, "Rapture 2027"],
+    ];
+
+    for (const [createdAt, action, targetType, targetId, targetLabel, summary] of
+      auditEntries) {
+      await ctx.db.insert("auditLog", {
+        hackathonId,
+        actorId: auditActorId,
+        actorName: ADMINS[0].name,
+        action,
+        targetType,
+        targetId: targetId || undefined,
+        targetLabel,
+        metadata: summary ? { summary } : undefined,
+        createdAt,
+      });
     }
 
     return {
       hackathon: "Rapture 2026",
+      draftHackathon: "Rapture 2027",
       password: DEMO_PASSWORD,
       admins: ADMINS.length,
       judges: JUDGES.length,
       teams: TEAMS.length,
+      assignments: seen.size,
       scorecards,
       finalized,
+      conflicts: 1,
+      auditEntries: auditEntries.length,
       unassignedTeams: TEAMS.length - assignableTeamCount,
       participantSample: participantLogins.slice(0, 3),
     };

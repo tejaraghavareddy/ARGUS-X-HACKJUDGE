@@ -2,17 +2,20 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { Tone } from "@/lib/rapture";
 
-/** Flat status pill. Colour comes from the semantic tokens, shape from the CSS. */
+/** Flat status pill. Colour comes from the semantic tokens, shape from the CSS.
+ *  `children` overrides the tone's own label (used by the audit log). */
 export function StatusBadge({
   tone,
   className,
+  children,
 }: {
   tone: Tone;
   className?: string;
+  children?: ReactNode;
 }) {
   return (
     <span className={cn("status-pill", tone.className, className)}>
-      {tone.label}
+      {children ?? tone.label}
     </span>
   );
 }

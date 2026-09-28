@@ -75,8 +75,12 @@ export default function JudgeReview() {
   const total = data.criteria.reduce((sum, criterion) => {
     const value = breakdown[criterion.name];
     if (typeof value !== "number") return sum;
-    return sum + (value / criterion.maxScore) * criterion.weight;
+    return sum + Math.max(0, Math.min(criterion.maxScore, value));
   }, 0);
+  const maxTotal = data.criteria.reduce(
+    (sum, criterion) => sum + criterion.maxScore,
+    0,
+  );
 
   const allScored = data.criteria.every(
     (c) => typeof breakdown[c.name] === "number",
@@ -275,7 +279,6 @@ export default function JudgeReview() {
                   <div className="flex items-baseline justify-between gap-3">
                     <span className="text-sm font-medium">{criterion.name}</span>
                     <span className="tabular text-xs text-muted-foreground">
-                      {criterion.weight}% weight ·{" "}
                       <span className="font-medium text-foreground">
                         {typeof value === "number" ? value : "–"}/
                         {criterion.maxScore}
@@ -285,15 +288,18 @@ export default function JudgeReview() {
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {criterion.description}
                   </p>
+                  {criterion.guidance && (
+                    <p className="mt-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs leading-relaxed text-muted-foreground">
+                      {criterion.guidance}
+                    </p>
+                  )}
                   <div
                     className="mt-2 flex flex-wrap gap-1.5"
                     role="group"
                     aria-label={`${criterion.name} score`}
                   >
-                    {Array.from(
-                      { length: criterion.maxScore },
-                      (_, i) => i + 1,
-                    ).map((point) => (
+                    {Array.from({ length: criterion.maxScore }, (_, i) => i + 1).map(
+                      (point) => (
                       <button
                         key={point}
                         type="button"
@@ -329,7 +335,7 @@ export default function JudgeReview() {
             <span className="tabular text-xl font-semibold text-foreground">
               {total.toFixed(1)}
               <span className="text-sm font-medium text-muted-foreground">
-                /100
+                /{maxTotal}
               </span>
             </span>
           </div>
