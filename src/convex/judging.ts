@@ -50,7 +50,17 @@ export const myAssignments = query({
   handler: async (ctx) => {
     const judge = await requireRole(ctx, ROLES.JUDGE);
     const hackathon = await getCurrentHackathon(ctx);
-    if (!hackathon) return { criteria: [], assignments: [], summary: emptySummary() };
+    if (!hackathon) {
+      return {
+        criteria: [],
+        assignments: [],
+        summary: emptySummary(),
+        deadline: null,
+        recentActivity: [],
+        blindJudging: false,
+        judgingOpen: false,
+      };
+    }
 
     const [assignments, criteria, conflicts, tracks] = await Promise.all([
       ctx.db
@@ -107,37 +117,94 @@ export const myAssignments = query({
         if (!team) return null;
         const submission = submissions[index];
         const score = scoreByAssignment.get(assignment._id as string);
+        const label = labels.get(team._id as string) ?? "Submission";
+
+        // How much of the judge's own scorecard is filled in. Counted against
+        // this judge's own draft only.
+        const scoredCount = score
+          ? criteria.filter(
+              (c) => typeof score.breakdown[c.name] === "number",
+            ).length
+          : 0;
 
         return {
           assignmentId: assignment._id,
           teamId: team._id,
-          teamName: blind ? (labels.get(team._id as string) ?? "Submission") : team.name,
+          // Under blind judging the team name and roster are withheld; the
+          // project itself is content, not identity, so it stays readable.
+          displayName: blind ? label : team.name,
           projectName: team.projectName,
-          tagline: team.tagline,
+          tagline: blind ? "" : team.tagline,
           trackName: team.trackId
             ? (trackById.get(team.trackId)?.name ?? "—")
             : "—",
           techStack: team.techStack,
+          submissionRef: submission?.submissionRef ?? null,
           submissionStatus: submission?.status ?? null,
           hasDemoUrl: Boolean(submission?.liveDemoUrl),
+          hasDocuments: false,
           hasAiReview: Boolean(submission?.aiReview),
           status: assignment.status,
           dueAt: assignment.dueAt,
+          assignedAt: assignment.assignedAt,
           // Presence of a score drives the "Started"/"Submitted" column, and
           // this is the judge's own draft — never another judge's.
           hasScore: Boolean(score),
           isFinal: score?.isFinal ?? false,
           myTotal: score?.totalScore ?? null,
+          myCommentedCount: score
+            ? criteria.filter(
+                (c) => (score.criterionComments?.[c.name] ?? "").trim().length > 0,
+              ).length
+            : 0,
+          criteriaCount: criteria.length,
+          scoredCount,
+          lastTouchedAt: score?.updatedAt ?? assignment.assignedAt,
         };
       })
       .filter((row): row is NonNullable<typeof row> => row !== null)
-      .sort((a, b) => a.teamName.localeCompare(b.teamName));
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+    // Document counts need the files index, which is fetched per team above;
+    // do it here so the table can show "has attachments" without opening it.
+    const filesByTeam = new Map<string, number>();
+    await Promise.all(
+      rows.map(async (row) => {
+        const files = await ctx.db
+          .query("submissionFiles")
+          .withIndex("by_team", (q: any) => q.eq("teamId", row.teamId))
+          .collect();
+        filesByTeam.set(row.teamId as string, files.length);
+      }),
+    );
+    for (const row of rows) {
+      row.hasDocuments = (filesByTeam.get(row.teamId as string) ?? 0) > 0;
+    }
+
+    // Recent activity is this judge's own trail only. Surfacing other judges'
+    // activity would leak how a submission is being received, which is exactly
+    // what the panel process is designed to prevent.
+    const recentActivity = [
+      ...rows
+        .filter((r) => r.hasScore)
+        .map((r) => ({
+          kind: r.isFinal ? ("submitted" as const) : ("draft" as const),
+          teamId: r.teamId,
+          label: r.displayName,
+          at: r.lastTouchedAt,
+        })),
+    ]
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 8);
 
     return {
       criteria: criteria.sort((a, b) => a.order - b.order),
       assignments: rows,
       blindJudging: blind,
       judgingOpen: hackathon.judgingOpen,
+      // The single date a judge actually plans around.
+      deadline: hackathon.judgingEndsAt,
+      recentActivity,
       summary: {
         total: rows.length,
         submitted: rows.filter((r) => r.status === ASSIGNMENT_STATUS.SUBMITTED)
@@ -190,32 +257,51 @@ export const reviewDetail = query({
       );
     }
 
-    const [team, submission, track, criteria, members, myScore] = await Promise.all([
-      ctx.db.get(args.teamId),
-      ctx.db
-        .query("submissions")
-        .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
-        .unique(),
-      ctx.db
-        .query("tracks")
-        .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
-        .collect(),
-      ctx.db
-        .query("judgingCriteria")
-        .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
-        .collect(),
-      ctx.db
-        .query("teamMembers")
-        .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
-        .collect(),
-      ctx.db
-        .query("scores")
-        .withIndex("by_assignment", (q) => q.eq("assignmentId", assignment._id))
-        .unique(),
-    ]);
+    const [team, submission, track, criteria, members, myScore, files] =
+      await Promise.all([
+        ctx.db.get(args.teamId),
+        ctx.db
+          .query("submissions")
+          .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+          .unique(),
+        ctx.db
+          .query("tracks")
+          .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
+          .collect(),
+        ctx.db
+          .query("judgingCriteria")
+          .withIndex("by_hackathon", (q) => q.eq("hackathonId", hackathon._id))
+          .collect(),
+        ctx.db
+          .query("teamMembers")
+          .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+          .collect(),
+        ctx.db
+          .query("scores")
+          .withIndex("by_assignment", (q) => q.eq("assignmentId", assignment._id))
+          .unique(),
+        ctx.db
+          .query("submissionFiles")
+          .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+          .collect(),
+      ]);
 
     const blind = hackathon.blindJudging;
     const labels = blind ? await blindLabelsFor(ctx, hackathon._id) : new Map();
+
+    // Uploaded documents. Served through Convex storage URLs scoped to this
+    // judge reading a team they are actually assigned to.
+    const documents = await Promise.all(
+      files.map(async (file) => ({
+        id: file._id,
+        kind: file.kind,
+        name: file.fileName,
+        size: file.size,
+        url: await ctx.storage.getUrl(
+          file.storageId as unknown as Id<"_storage">,
+        ),
+      })),
+    );
 
     return {
       assignment: {
@@ -225,6 +311,7 @@ export const reviewDetail = query({
       },
       blindJudging: blind,
       judgingOpen: hackathon.judgingOpen,
+      deadline: hackathon.judgingEndsAt,
       team: team
         ? {
             id: team._id,
@@ -232,7 +319,7 @@ export const reviewDetail = query({
               ? (labels.get(team._id as string) ?? "Submission")
               : team.name,
             projectName: team.projectName,
-            tagline: team.tagline,
+            tagline: blind ? "" : team.tagline,
             description: team.description,
             techStack: team.techStack,
             repoUrl: submission?.githubUrl ?? null,
@@ -243,7 +330,8 @@ export const reviewDetail = query({
               : "—",
           }
         : null,
-      // Under blind judging the roster is withheld entirely.
+      // Under blind judging the roster is withheld entirely — names, and with
+      // them any employer or college the team listed.
       members: blind
         ? []
         : members.map((m) => ({
@@ -251,12 +339,22 @@ export const reviewDetail = query({
             role: m.role,
             isLead: m.isLead,
           })),
+      documents,
       submission: submission
         ? {
             status: submission.status,
+            submissionRef: submission.submissionRef ?? null,
+            // The structured form, exactly as the team wrote it.
+            problemStatement: submission.problemStatement ?? "",
+            solutionDescription: submission.solutionDescription ?? "",
+            targetUsers: submission.targetUsers ?? "",
+            keyFeatures: submission.keyFeatures,
+            innovation: submission.innovation ?? "",
+            expectedImpact: submission.expectedImpact ?? "",
+            implementationDetails: submission.implementationDetails ?? "",
+            futureScope: submission.futureScope ?? "",
             abstract: submission.abstract,
             highlights: submission.highlights,
-            videoUrl: submission.videoUrl ?? null,
             submittedAt: submission.submittedAt ?? null,
             // Read-only advisory context. Carries no score and cannot write one.
             aiReview: submission.aiReview ?? null,
@@ -266,12 +364,14 @@ export const reviewDetail = query({
       myScore: myScore
         ? {
             breakdown: myScore.breakdown,
+            criterionComments: myScore.criterionComments ?? {},
             totalScore: myScore.totalScore,
             maxTotalScore: myScore.maxTotalScore,
             comments: myScore.comments,
             recommendation: myScore.recommendation,
             isFinal: myScore.isFinal,
             submittedAt: myScore.submittedAt ?? null,
+            updatedAt: myScore.updatedAt,
           }
         : null,
     };
@@ -303,6 +403,9 @@ function computeTotal(
 const scoreArgs = {
   teamId: v.id("teams"),
   breakdown: v.record(v.string(), v.number()),
+  // criterion name -> the judge's reasoning. Same keying as `breakdown`, and
+  // validated against the rubric for the same reason.
+  criterionComments: v.optional(v.record(v.string(), v.string())),
   comments: v.string(),
   recommendation: v.union(
     v.literal("advance"),
@@ -384,6 +487,25 @@ export const saveScore = mutation({
         throw new Error(`Unknown scoring criterion: ${name}`);
       }
     }
+    for (const name of Object.keys(args.criterionComments ?? {})) {
+      if (!known.has(name)) {
+        throw new Error(`Unknown scoring criterion in comment: ${name}`);
+      }
+    }
+
+    // Normalise the comments: trim, and drop empties so a blank box does not
+    // persist as an empty string.
+    const criterionComments: Record<string, string> = {};
+    for (const [name, raw] of Object.entries(args.criterionComments ?? {})) {
+      const value = raw.trim();
+      if (value) criterionComments[name] = value.slice(0, 2000);
+    }
+
+    // An overall note to the panel is part of a complete evaluation, not an
+    // optional extra — a score with no reasoning is not reviewable.
+    if (args.isFinal && !args.comments.trim()) {
+      throw new Error("Add an overall comment before submitting.");
+    }
 
     if (args.isFinal) {
       const missing = criteria.filter(
@@ -415,6 +537,7 @@ export const saveScore = mutation({
     if (existing) {
       await ctx.db.patch(existing._id, {
         breakdown: args.breakdown,
+        criterionComments,
         totalScore: total,
         maxTotalScore: maxTotal,
         comments: args.comments,
@@ -430,6 +553,7 @@ export const saveScore = mutation({
         teamId: args.teamId,
         judgeId: judge._id,
         breakdown: args.breakdown,
+        criterionComments,
         totalScore: total,
         maxTotalScore: maxTotal,
         comments: args.comments,
@@ -470,5 +594,60 @@ export const saveScore = mutation({
     }
 
     return { totalScore: total, maxTotalScore: maxTotal };
+  },
+});
+
+/**
+ * Reopen a finalized scorecard.
+ *
+ * The counterpart to the lock in `saveScore`, and deliberately the ONLY way out
+ * of it. Not a judge function: a judge cannot un-finalize their own card, which
+ * is the property that makes "final" mean something. Admins can, and the reason
+ * is recorded in the audit log so a reopened card is always explainable.
+ */
+export const adminReopenScore = mutation({
+  args: {
+    teamId: v.id("teams"),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const admin = await requireRole(ctx, ROLES.ADMIN);
+    const hackathon = await getCurrentHackathon(ctx);
+    if (!hackathon) throw new Error("No hackathon is currently active.");
+
+    const score = await ctx.db
+      .query("scores")
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+      .collect();
+    const finalCards = score.filter((s) => s.isFinal);
+    if (finalCards.length === 0) {
+      throw new Error("That team has no submitted scorecard to reopen.");
+    }
+
+    for (const card of finalCards) {
+      await ctx.db.patch(card._id, {
+        isFinal: false,
+        submittedAt: undefined,
+        updatedAt: Date.now(),
+      });
+      // The owning judge, not the admin, makes the change from here.
+      await ctx.db.patch(card.assignmentId, {
+        status: ASSIGNMENT_STATUS.IN_PROGRESS,
+      });
+    }
+
+    await logAudit(ctx, {
+      hackathonId: hackathon._id,
+      actor: admin,
+      action: "score.reopen",
+      targetType: "team",
+      targetId: args.teamId,
+      metadata: {
+        reopened: String(finalCards.length),
+        reason: args.reason?.trim() || "No reason given",
+      },
+    });
+
+    return { reopened: finalCards.length };
   },
 });

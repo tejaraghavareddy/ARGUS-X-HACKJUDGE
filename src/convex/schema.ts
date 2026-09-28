@@ -74,6 +74,10 @@ const aiReview = v.object({
   suggestedFocus: v.string(),
   model: v.string(),
   generatedAt: v.number(),
+  // criterion name -> the specific evidence that bears on that criterion.
+  // Optional because it is keyed by the rubric, which the admin can reshape at
+  // any time; a criterion with no evidence simply shows none.
+  evidence: v.optional(v.record(v.string(), v.array(v.string()))),
 });
 
 const schema = defineSchema(
@@ -271,6 +275,9 @@ const schema = defineSchema(
       judgeId: v.id("users"),
       // criterion name -> awarded points (0..criterion maxScore)
       breakdown: v.record(v.string(), v.number()),
+      // criterion name -> the judge's own reasoning for that criterion. Kept
+      // separate from `comments`, which is the overall note to the panel.
+      criterionComments: v.optional(v.record(v.string(), v.string())),
       totalScore: v.number(),
       // Snapshot of the rubric ceiling at the time of scoring, so a later rubric
       // change can never retroactively rescale a locked scorecard.
