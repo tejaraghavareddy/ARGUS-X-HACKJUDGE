@@ -621,17 +621,22 @@ export const adminReopenScore = mutation({
   args: {
     teamId: v.id("teams"),
     reason: v.optional(v.string()),
+    // When given, only that judge's card is reopened; otherwise every final
+    // card for the team (original behavior).
+    judgeId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
     const admin = await requireRole(ctx, ROLES.ADMIN);
     const hackathon = await getCurrentHackathon(ctx);
     if (!hackathon) throw new Error("No hackathon is currently active.");
 
-    const score = await ctx.db
+    const allScores = await ctx.db
       .query("scores")
       .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
       .collect();
-    const finalCards = score.filter((s) => s.isFinal);
+    const finalCards = allScores.filter(
+      (s) => s.isFinal && (args.judgeId === undefined || s.judgeId === args.judgeId),
+    );
     if (finalCards.length === 0) {
       throw new Error("That team has no submitted scorecard to reopen.");
     }

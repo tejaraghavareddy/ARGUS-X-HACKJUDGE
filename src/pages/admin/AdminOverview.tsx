@@ -23,7 +23,97 @@ import {
   StatusBadge,
 } from "@/components/app/Primitives";
 import { Button } from "@/components/ui/button";
-import { HACKATHON_TONE, formatDate, formatDateTime } from "@/lib/rapture";
+import {
+  HACKATHON_TONE,
+  formatDate,
+  formatDateTime,
+  type Tone,
+} from "@/lib/rapture";
+
+/** Flag type → badge tone for the anomaly list. */
+const ANOMALY_TONE: Record<string, Tone> = {
+  divergence: { label: "Divergence", className: "bg-warning/15 text-warning-foreground border-warning/40" },
+  outlier_high: { label: "Outlier (high)", className: "bg-warning/15 text-warning-foreground border-warning/40" },
+  outlier_low: { label: "Outlier (low)", className: "bg-warning/15 text-warning-foreground border-warning/40" },
+  incomplete: { label: "Incomplete", className: "bg-warning/15 text-warning-foreground border-warning/40" },
+  pattern: { label: "Pattern", className: "bg-secondary text-secondary-foreground" },
+  duplicate: { label: "Possible duplicate", className: "bg-warning/15 text-warning-foreground border-warning/40" },
+};
+
+/**
+ * Score-anomaly alert strip. Purely informational: links the organizer into
+ * the team's Review Evaluations interface where every decision is made
+ * manually and audited. No score is ever changed from here.
+ */
+function AnomalyBanner({
+  flagged,
+}: {
+  flagged: {
+    teamId: string;
+    teamName: string;
+    projectName: string;
+    flags: { type: string; title: string; detail: string; judgeNames: string[] }[];
+  }[];
+}) {
+  const [open, setOpen] = useState(true);
+  const totalFlags = flagged.reduce((sum, t) => sum + t.flags.length, 0);
+
+  return (
+    <SectionCard
+      className="mb-6 border-warning/40"
+      title="Potential scoring anomalies"
+      description={
+        "Patterns flagged for human review — large judge differences, extreme " +
+        "scores, unusual patterns. Nothing is changed automatically; open a " +
+        "team to review its evaluations and decide."
+      }
+      actions={
+        <Button variant="ghost" size="sm" onClick={() => setOpen((v) => !v)}>
+          {open ? "Hide" : "Show"}
+        </Button>
+      }
+    >
+      {open && (
+        <ul className="divide-y divide-border">
+          {flagged.map((team) => (
+            <li key={team.teamId} className="flex flex-wrap items-start gap-3 py-3 first:pt-0 last:pb-0">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">
+                  {team.projectName}
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    {team.teamName}
+                  </span>
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {team.flags.map((flag, i) => (
+                    <li key={i} className="flex items-start gap-2 text-xs leading-relaxed">
+                      <StatusBadge tone={ANOMALY_TONE[flag.type] ?? ANOMALY_TONE.pattern} />
+                      <span className="text-muted-foreground">
+                        <span className="font-medium text-foreground">{flag.title}</span>{" "}
+                        {flag.detail}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <Link
+                to={`/admin/teams/${team.teamId}`}
+                className="btn-base btn-outline btn-sm shrink-0"
+              >
+                Review Evaluations
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-3 border-t border-border pt-3 text-[0.6875rem] text-muted-foreground">
+        {flagged.length} team{flagged.length === 1 ? "" : "s"} flagged ·{" "}
+        {totalFlags} signal{totalFlags === 1 ? "" : "s"} · detection is read-only;
+        every review decision is recorded in the audit log.
+      </p>
+    </SectionCard>
+  );
+}
 
 const TOOLTIP_STYLE = {
   border: "1px solid #e2e3e7",
@@ -37,6 +127,7 @@ const AXIS = { fontSize: 11, fill: "#5b6270" };
 
 export default function AdminOverview() {
   const data = useQuery(api.hackathons.adminOverview);
+  const anomalies = useQuery(api.anomalies.scan);
   const seed = useMutation(api.seed.seed);
   const [seeding, setSeeding] = useState(false);
 
@@ -172,6 +263,10 @@ export default function AdminOverview() {
             and will not be scored until that is fixed.
           </p>
         </div>
+      )}
+
+      {anomalies && anomalies.flaggedTeams.length > 0 && (
+        <AnomalyBanner flagged={anomalies.flaggedTeams} />
       )}
 
       <div className="grid gap-5 lg:grid-cols-2">

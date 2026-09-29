@@ -4,6 +4,7 @@ import { requireRole } from "./lib/authorization";
 import { getCurrentHackathon } from "./lib/resolve";
 import { logAudit } from "./lib/audit";
 import { ROLES, SUBMISSION_STATUS } from "./schema";
+import type { Id } from "./_generated/dataModel";
 
 // ---------------------------------------------------------------------------
 // Team management (participant self-service)
@@ -330,6 +331,21 @@ export const adminTeamDetail = query({
       judges.filter((j) => j !== null).map((j) => [j!._id, j!]),
     );
 
+    const files = await ctx.db
+      .query("submissionFiles")
+      .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+      .collect();
+    const documents = await Promise.all(
+      files.map(async (file) => ({
+        name: file.fileName,
+        kind: file.kind,
+        size: file.size,
+        url: await ctx.storage.getUrl(
+          file.storageId as unknown as Id<"_storage">,
+        ),
+      })),
+    );
+
     return {
       team: team
         ? {
@@ -374,15 +390,18 @@ export const adminTeamDetail = query({
       criteria: criteria.sort((a, b) => a.order - b.order),
       scorecards: scores
         .map((score) => ({
+          judgeId: score.judgeId,
           judgeName: judgeById.get(score.judgeId)?.name ?? "Unknown judge",
           totalScore: score.totalScore,
           breakdown: score.breakdown,
+          criterionComments: score.criterionComments ?? {},
           comments: score.comments,
           recommendation: score.recommendation,
           isFinal: score.isFinal,
           submittedAt: score.submittedAt ?? null,
         }))
         .sort((a, b) => b.totalScore - a.totalScore),
+      documents,
     };
   },
 });
