@@ -216,6 +216,12 @@ const schema = defineSchema(
       publicLeaderboard: v.boolean(),
       resultsPublished: v.boolean(),
       resultsPublishedAt: v.optional(v.number()),
+      // How the PUBLIC leaderboard labels entries: real team names or the
+      // anonymous submission reference ("RAP-0001"). Admin-facing surfaces
+      // always show real names; this only governs the public view.
+      leaderboardDisplay: v.optional(
+        v.union(v.literal("team_names"), v.literal("anonymous_ids")),
+      ),
       maxTeamSize: v.number(),
       createdAt: v.number(),
     })
