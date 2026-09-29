@@ -583,13 +583,25 @@ export const saveScore = mutation({
         });
       }
 
+      // Permanent audit record of this individual evaluation. The full
+      // breakdown is stored criterion-by-criterion ("Criterion=score") so the
+      // per-judge evaluation is reconstructable from the audit log alone,
+      // forever, even if scores rows were ever changed.
       await logAudit(ctx, {
         hackathonId: hackathon._id,
         actor: judge,
         action: "score.submitted",
         targetType: "team",
         targetId: args.teamId,
-        metadata: { total: String(total) },
+        metadata: {
+          total: String(total),
+          maxTotal: String(maxTotal),
+          recommendation: args.recommendation,
+          breakdown: criteria
+            .map((c) => `${c.name}=${args.breakdown[c.name] ?? "-"}/${c.maxScore}`)
+            .join("; "),
+          comments: args.comments.slice(0, 2000),
+        },
       });
     }
 
@@ -625,6 +637,23 @@ export const adminReopenScore = mutation({
     }
 
     for (const card of finalCards) {
+      // Preserve what the judge originally submitted in the audit trail, so a
+      // reopened evaluation is always traceable to its pre-reopen values.
+      await logAudit(ctx, {
+        hackathonId: hackathon._id,
+        actor: admin,
+        action: "score.reopen",
+        targetType: "team",
+        targetId: args.teamId,
+        metadata: {
+          judgeId: card.judgeId,
+          previousTotal: String(card.totalScore),
+          previousBreakdown: Object.entries(card.breakdown)
+            .map(([name, value]) => `${name}=${value}`)
+            .join("; "),
+          reason: args.reason?.trim() || "No reason given",
+        },
+      });
       await ctx.db.patch(card._id, {
         isFinal: false,
         submittedAt: undefined,

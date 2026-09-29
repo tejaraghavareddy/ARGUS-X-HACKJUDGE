@@ -386,3 +386,159 @@ export const adminTeamDetail = query({
     };
   },
 });
+
+// ---------------------------------------------------------------------------
+// Multi-judge aggregation
+//
+// Every number here is a plain arithmetic mean of the judges' own finalized
+// totals — no normalization, weighting, trimming or rounding beyond display.
+// The `method` string is returned alongside the numbers so whatever renders
+// them can state exactly how they were computed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Full per-judge evaluation analytics for one team (admin only).
+ *
+ * Individual scorecards and aggregates are gated behind the judging lock:
+ * while `judgingOpen` is true only completion status is returned, so no admin
+ * peeking at in-flight scores can influence the panel. `rounding` is included
+ * in the method string because means are rounded to 1 decimal for display
+ * only — the underlying values are untouched.
+ */
+export const teamScoreAnalytics = query({
+  args: { teamId: v.id("teams") },
+  handler: async (ctx, args) => {
+    await requireRole(ctx, ROLES.ADMIN);
+    const hackathon = await getCurrentHackathon(ctx);
+    if (!hackathon) throw new Error("No hackathon is currently active.");
+
+    const [assignments, scores, criteria] = await Promise.all([
+      ctx.db
+        .query("assignments")
+        .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+        .collect(),
+      ctx.db
+        .query("scores")
+        .withIndex("by_team", (q) => q.eq("teamId", args.teamId))
+        .collect(),
+      ctx.db
+        .query("judgingCriteria")
+        .withIndex("by_hackathon", (q) =>
+          q.eq("hackathonId", hackathon._id),
+        )
+        .collect(),
+    ]);
+
+    const judgeIds = [...new Set(assignments.map((a) => a.judgeId))];
+    const judges = await Promise.all(judgeIds.map((id) => ctx.db.get(id)));
+    const judgeById = new Map(
+      judges.filter((j) => j !== null).map((j) => [j!._id, j!]),
+    );
+
+    const finalScores = scores.filter((s) => s.isFinal);
+    const assigned = assignments.length;
+    const completed = assignments.filter(
+      (a) => a.status === "submitted",
+    ).length;
+    const inProgress = assignments.filter(
+      (a) => a.status === "in_progress",
+    ).length;
+    const notStarted = assignments.filter(
+      (a) => a.status === "not_started",
+    ).length;
+
+    const totals = finalScores.map((s) => s.totalScore);
+    const mean =
+      totals.length > 0
+        ? totals.reduce((sum, t) => sum + t, 0) / totals.length
+        : null;
+
+    // Per-criterion: which judges scored it, and the plain mean of exactly
+    // those scores. Judges who left a criterion unscored are excluded from
+    // that criterion's mean, never counted as zero.
+    const criterionStats = criteria
+      .sort((a, b) => a.order - b.order)
+      .map((criterion) => {
+        const awarded = finalScores
+          .map((s) => s.breakdown[criterion.name])
+          .filter((v): v is number => typeof v === "number");
+        return {
+          name: criterion.name,
+          maxScore: criterion.maxScore,
+          judgeCount: awarded.length,
+          average:
+            awarded.length > 0
+              ? Number(
+                  (
+                    awarded.reduce((sum, v) => sum + v, 0) / awarded.length
+                  ).toFixed(1),
+                )
+              : null,
+        };
+      });
+
+    const method =
+      totals.length > 1
+        ? `${totals.length} finalized scorecards. Average = arithmetic mean = (sum of all judge totals) ÷ ${totals.length}, rounded to 1 decimal place for display only. No normalization, weighting or outlier removal is applied. Example: 92, 88, 90 → (92+88+90) ÷ 3 = 90.`
+        : totals.length === 1
+          ? "1 finalized scorecard. Average equals that judge's total — no adjustment applied."
+          : "No finalized scorecards yet.";
+
+    return {
+      judgingLocked: !hackathon.judgingOpen,
+      completion: {
+        assigned,
+        completed,
+        inProgress,
+        notStarted,
+        // All assigned judges have submitted a final scorecard.
+        isComplete: assigned > 0 && completed === assigned,
+        pct: assigned === 0 ? 0 : Math.round((completed / assigned) * 100),
+      },
+      // While judging is open, only the lock state and completion are
+      // exposed. Score details unlock when the judging phase closes.
+      aggregates: hackathon.judgingOpen
+        ? null
+        : {
+            judgeCount: totals.length,
+            scores: finalScores
+              .map((s) => ({
+                judgeId: s.judgeId,
+                judgeName:
+                  judgeById.get(s.judgeId)?.name ?? "Unknown judge",
+                totalScore: s.totalScore,
+                maxTotalScore: s.maxTotalScore,
+                recommendation: s.recommendation,
+                submittedAt: s.submittedAt ?? null,
+              }))
+              .sort((a, b) => b.totalScore - a.totalScore),
+            average: mean === null ? null : Number(mean.toFixed(1)),
+            min: totals.length ? Math.min(...totals) : null,
+            max: totals.length ? Math.max(...totals) : null,
+            range: totals.length
+              ? Number((Math.max(...totals) - Math.min(...totals)).toFixed(2))
+              : null,
+            // Distribution over 10-point bands across the rubric ceiling,
+            // e.g. { "90-100": 2, "80-89": 1 }. Counted from the raw totals.
+            distribution: Object.entries(
+              totals.reduce<Record<string, number>>((acc, total) => {
+                const maxTotal =
+                  finalScores.find((s) => s.totalScore === total)
+                    ?.maxTotalScore ?? 100;
+                const band = Math.max(
+                  0,
+                  Math.min(9, Math.floor((total / Math.max(1, maxTotal)) * 10)),
+                );
+                const label = `${band * 10}-${band === 9 ? 100 : band * 10 + 9}`;
+                acc[label] = (acc[label] ?? 0) + 1;
+                return acc;
+              }, {}),
+            )
+              .map(([label, count]) => ({ label, count }))
+              .sort((a, b) => a.label.localeCompare(b.label)),
+            criterionStats,
+            method,
+          },
+    };
+  },
+});

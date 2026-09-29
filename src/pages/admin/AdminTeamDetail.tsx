@@ -5,6 +5,11 @@ import { toast } from "sonner";
 import { ArrowLeft, ExternalLink, LockOpen } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import {
+  RECOMMENDATION_TONE,
+  SUBMISSION_TONE,
+  formatDate,
+} from "@/lib/rapture";
 import { AppShell } from "@/components/app/AppShell";
 import {
   EmptyState,
@@ -26,6 +31,50 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
+/** Shape returned by api.teams.teamScoreAnalytics (kept loose for rendering). */
+type TeamScoreAnalytics = {
+  judgingLocked: boolean;
+  completion: {
+    assigned: number;
+    completed: number;
+    inProgress: number;
+    notStarted: number;
+    isComplete: boolean;
+    pct: number;
+  };
+  aggregates: null | {
+    judgeCount: number;
+    scores: {
+      judgeName: string;
+      totalScore: number;
+      maxTotalScore: number;
+      recommendation: string;
+    }[];
+    average: number | null;
+    min: number | null;
+    max: number | null;
+    range: number | null;
+    distribution: { label: string; count: number }[];
+    criterionStats: {
+      name: string;
+      maxScore: number;
+      judgeCount: number;
+      average: number | null;
+    }[];
+    method: string;
+  };
+};
+
+/**
+ * Multi-judge evaluation panel.
+ *
+ * While judging is open, only completion status is shown — in-flight scores
+ * stay sealed. Once judging is locked, the panel shows every judge's
+ * individual total, per-criterion means, range and distribution, each computed
+ * as a plain arithmetic mean. The calculation method is displayed verbatim
+ * from the server so the numbers can never be presented without their
+ * derivation.
 import {
   RECOMMENDATION_TONE,
   SUBMISSION_TONE,
@@ -65,6 +114,7 @@ export default function AdminTeamDetail() {
   };
   const team = teamId ? (teamId as Id<"teams">) : null;
   const data = useQuery(api.teams.adminTeamDetail, team ? { teamId: team } : "skip");
+  const analytics = useQuery(api.teams.teamScoreAnalytics, team ? { teamId: team } : "skip");
 
   if (data === undefined) {
     return (
@@ -135,6 +185,8 @@ export default function AdminTeamDetail() {
           tone={average ? "accent" : "surface"}
         />
       </div>
+
+      {analytics && <EvaluationAnalytics analytics={analytics} />}
 
       <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
         <div className="space-y-5">
@@ -336,5 +388,147 @@ export default function AdminTeamDetail() {
         </DialogContent>
       </Dialog>
     </AppShell>
+  );
+}
+
+function EvaluationAnalytics({ analytics }: { analytics: TeamScoreAnalytics }) {
+  const { completion, aggregates, judgingLocked } = analytics;
+  const maxBandCount = Math.max(1, ...aggregates?.distribution.map((d) => d.count) ?? [1]);
+
+  return (
+    <SectionCard
+      title="Evaluation analytics"
+      description="Multi-judge aggregates computed as a plain arithmetic mean of finalized scorecards — no normalization or weighting."
+    >
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatTile label="Judges assigned" value={completion.assigned} />
+        <StatTile
+          label="Completed"
+          value={`${completion.completed} / ${completion.assigned}`}
+          hint={completion.isComplete ? "all judges submitted" : "awaiting judges"}
+          tone={completion.isComplete ? "accent" : "surface"}
+        />
+        <StatTile label="In progress" value={completion.inProgress} />
+        <StatTile label="Not started" value={completion.notStarted} />
+      </div>
+
+      {!judgingLocked || !aggregates ? (
+        <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+          Judging is still open. Individual scores, criterion-level detail and
+          aggregates are sealed until the judging phase is locked to protect
+          the panel's independence. Completion status only is shown.
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatTile
+              label="Average score"
+              value={aggregates.average ?? "—"}
+              hint="arithmetic mean"
+              tone="accent"
+            />
+            <StatTile
+              label="Score range"
+              value={aggregates.min === null ? "—" : `${aggregates.min} – ${aggregates.max}`}
+              hint={aggregates.range === null ? undefined : `range = ${aggregates.range} pts`}
+            />
+            <StatTile label="Judges scored" value={aggregates.judgeCount} />
+            <StatTile
+              label="Completion"
+              value={`${completion.pct}%`}
+              tone={completion.isComplete ? "accent" : "surface"}
+            />
+          </div>
+
+          <div>
+            <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              Individual judge scores (finalized)
+            </h4>
+            <ul className="mt-2 divide-y divide-border">
+              {aggregates.scores.map((s) => (
+                <li
+                  key={s.judgeName}
+                  className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0"
+                >
+                  <span className="text-sm font-medium">{s.judgeName}</span>
+                  <span className="flex items-center gap-2">
+                    <StatusBadge
+                      tone={RECOMMENDATION_TONE[s.recommendation] ?? RECOMMENDATION_TONE.hold}
+                    />
+                    <span className="tabular rounded-md bg-secondary px-2 py-0.5 text-sm font-semibold">
+                      {s.totalScore} / {s.maxTotalScore}
+                    </span>
+                  </span>
+                </li>
+              ))}
+              {aggregates.scores.length === 0 && (
+                <li className="py-2 text-xs text-muted-foreground">No finalized scorecards.</li>
+              )}
+            </ul>
+          </div>
+
+          <div>
+            <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              Criterion-level scores (mean across judges)
+            </h4>
+            <div className="mt-2 space-y-1.5">
+              {aggregates.criterionStats.map((c) => {
+                const pct = c.average === null ? 0 : Math.min(100, (c.average / Math.max(1, c.maxScore)) * 100);
+                return (
+                  <div key={c.name}>
+                    <div className="flex items-center justify-between text-xs">
+                      <span>{c.name}</span>
+                      <span className="tabular font-medium">
+                        {c.average ?? "–"} / {c.maxScore}
+                        <span className="ml-1.5 text-muted-foreground">
+                          ({c.judgeCount} judge{c.judgeCount === 1 ? "" : "s"})
+                        </span>
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className="h-full rounded-full bg-primary"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              Score distribution
+            </h4>
+            {aggregates.distribution.length === 0 ? (
+              <p className="mt-2 text-xs text-muted-foreground">No scores to distribute.</p>
+            ) : (
+              <div className="mt-2 space-y-1.5">
+                {aggregates.distribution.map((band) => (
+                  <div key={band.label} className="flex items-center gap-3">
+                    <span className="tabular w-16 text-xs text-muted-foreground">{band.label}</span>
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className="h-full rounded-full bg-accent"
+                        style={{ width: `${(band.count / maxBandCount) * 100}%` }}
+                      />
+                    </div>
+                    <span className="tabular w-6 text-right text-xs font-medium">{band.count}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-md border border-border bg-secondary/40 px-3 py-2.5">
+            <p className="text-[0.625rem] font-semibold tracking-wide text-muted-foreground uppercase">
+              Calculation method
+            </p>
+            <p className="mt-1 text-xs leading-relaxed">{aggregates.method}</p>
+          </div>
+        </div>
+      )}
+    </SectionCard>
   );
 }
